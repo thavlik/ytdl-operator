@@ -104,8 +104,7 @@ async fn reconcile(
         Some(namespace) => namespace,
     };
     let name = video.name_any(); // Name of the Video resource is used to name the subresources as well.
-    let action = determine_action(client.clone(), &video).await?;
-    return match action {
+    match determine_action(client.clone(), &video).await? {
         VideoAction::CreateDownloadPod(options) => {
             // Apply the finalizer first. If that fails, the `?` operator invokes automatic conversion
             // of `kube::Error` to the `Error` defined in this crate.
@@ -123,16 +122,16 @@ async fn reconcile(
             video::delete_download_pod(client.clone(), &name, &namespace).await?;
 
             // Once the deployment is successfully removed, remove the finalizer to make it possible
-            // for Kubernetes to delete the `Video` resource.
+            // for Kubernetes to delete the `Video` resource (if needed)
             video::finalizer::delete(client, &name, &namespace).await?;
 
-            // Makes no sense to delete after a successful delete, as the resource is gone
+            // 
             Ok(Action::await_change())
         }
         VideoAction::WriteMetadata => Ok(Action::requeue(Duration::from_secs(10))),
         // The resource is already in desired state, do nothing and re-check after 10 seconds
         VideoAction::NoOp => Ok(Action::requeue(Duration::from_secs(10))),
-    };
+    }
 }
 
 async fn needs_video_download(video: &Video) -> Result<bool, Error> {
@@ -218,6 +217,9 @@ async fn determine_action(
         return Ok(VideoAction::Delete);
     };
 
+    // TODO: determine if metadata needs to be written
+    // to the database
+
     // Check if the video and/or thumbnail need to
     // be downloaded. Both of these operations must
     // occur inside a VPN-connected pod, so we will
@@ -236,8 +238,6 @@ async fn determine_action(
             download_thumbnail,
         ).await;
     }
-
-    // TODO: determine if metadata needs to be written
     
     Ok(VideoAction::NoOp)
 }
