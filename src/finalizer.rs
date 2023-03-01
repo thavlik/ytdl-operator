@@ -16,10 +16,9 @@ pub async fn add(client: Client, name: &str, namespace: &str) -> Result<Echo, Er
     let api: Api<Echo> = Api::namespaced(client, namespace);
     let finalizer: Value = json!({
         "metadata": {
-            "finalizers": ["echoes.example.com/finalizer"]
+            "finalizers": ["ytdl.org/finalizer"]
         }
     });
-
     let patch: Patch<&Value> = Patch::Merge(&finalizer);
     Ok(api.patch(name, &PatchParams::default(), &patch).await?)
 }
@@ -40,7 +39,6 @@ pub async fn delete(client: Client, name: &str, namespace: &str) -> Result<Echo,
             "finalizers": null
         }
     });
-
     let patch: Patch<&Value> = Patch::Merge(&finalizer);
     Ok(api.patch(name, &PatchParams::default(), &patch).await?)
 }
