@@ -1,2 +1,4 @@
+dependencies:
+- nordvpn
 build:
-  name: thavlik/ytdl-operator:latest
+  name: thavlik/ytdl-operator

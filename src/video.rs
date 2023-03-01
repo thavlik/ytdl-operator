@@ -1,19 +1,32 @@
-use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
-use k8s_openapi::api::core::v1::{Pod, Container, ContainerPort, PodSpec, PodTemplateSpec};
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
+use k8s_openapi::api::core::v1::{Pod, Container, PodSpec};
 use kube::api::{DeleteParams, ObjectMeta, PostParams};
 use kube::{Api, Client, Error};
 use std::collections::BTreeMap;
 use crate::crd::Video;
 
+/// A central tenet of this project is to only access
+/// the external video service from within pods that
+/// have VPN sidecars. Thus, both the video and the
+/// thumbnail have to be downloaded by the proxy pod.
+pub struct DownloadPodOptions {
+    // if true, download the video to the storage backend
+    pub download_video: bool,
+
+    // if true, download the thumbnail to the storage backend
+    pub download_thumbnail: bool,
+}
+
 pub async fn create_download_pod(
     client: Client,
     name: &str,
     namespace: &str,
+    options: DownloadPodOptions,
 ) -> Result<Pod, Error> {
     let mut labels: BTreeMap<String, String> = BTreeMap::new();
     labels.insert("app".to_owned(), name.to_owned());
 
+    // TODO: configure vpn
+    
     let pod: Pod = Pod {
         metadata: ObjectMeta {
             name: Some(name.to_owned()),
