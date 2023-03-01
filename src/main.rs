@@ -90,7 +90,9 @@ async fn reconcile(
     video: Arc<Video>,
     context: Arc<ContextData>,
 ) -> Result<Action, Error> {
-    let client: Client = context.client.clone(); // The `Client` is shared -> a clone from the reference is obtained
+    // The `Client` is shared -> a clone from the reference is obtained
+    let client: Client = context.client.clone();
+    
     let namespace: String = match video.namespace() {
         None => {
             // If there is no namespace to deploy to defined, reconciliation ends with an error immediately.
@@ -104,7 +106,22 @@ async fn reconcile(
         Some(namespace) => namespace,
     };
     let name = video.name_any(); // Name of the Video resource is used to name the subresources as well.
-    match determine_action(client.clone(), &video).await? {
+
+    // Read phase of the reconciliation loop.
+    let action = determine_action(client.clone(), &video).await?;
+    
+    if action != VideoAction::NoOp {
+        // This log line is useful for debugging purposes.
+        // Separate read & write phases greatly simplifies
+        // the reconciliation loop. Deciding which actions
+        // deserve their own enum entries may come down to
+        // how badly you want to see them in the log, and
+        // that alone is a perfectly valid reason to do so.
+        println!("Action: {:?}", action);
+    }
+
+    // Write phase of the reconciliation loop.
+    match action {
         VideoAction::CreateDownloadPod(options) => {
             // Apply the finalizer first. If that fails, the `?` operator invokes automatic conversion
             // of `kube::Error` to the `Error` defined in this crate.
@@ -129,8 +146,10 @@ async fn reconcile(
             Ok(Action::await_change())
         }
         VideoAction::WriteMetadata => Ok(Action::requeue(Duration::from_secs(10))),
-        // The resource is already in desired state, do nothing and re-check after 10 seconds
-        VideoAction::NoOp => Ok(Action::requeue(Duration::from_secs(10))),
+        VideoAction::NoOp => {
+            // The resource is already in desired state, do nothing and re-check after 10 seconds
+            Ok(Action::requeue(Duration::from_secs(10)))
+        },
     }
 }
 
