@@ -22,3 +22,6 @@ serde = "1"
 serde_json = "1.0"
 schemars = "0.8"
 thiserror = "1"    # Custom Error definitions and convenient error mappings
+rust-s3 = { version = "0.32" }
+aws-region = "0.25.1"
+aws-creds = "0.30"
