@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use futures::stream::StreamExt;
 use k8s_openapi::api::core::v1::{Pod, PodStatus, Secret};
-use k8s_openapi::chrono::Utc;
 use kube::Resource;
 use kube::ResourceExt;
 use kube::{
@@ -15,12 +14,15 @@ use s3::bucket::Bucket;
 use s3::creds::Credentials;
 use std::str::FromStr;
 
-use crate::crd::{Video, VideoPhase, S3OutputSpec};
+use crate::crd::{S3OutputSpec, Video, VideoPhase};
 
 pub mod crd;
 mod video;
 
 use video::{DownloadPodOptions, FailureOptions, ProgressOptions};
+
+const DEFAULT_REGION: &str = "us-east-1";
+const DEFAULT_TEMPLATE: &str = "%(id)s.%(ext)s";
 
 #[tokio::main]
 async fn main() {
@@ -77,7 +79,7 @@ enum VideoAction {
     // The resource first appeared to the controller and requires
     // its phase to be set to "Pending" to indicate that reconciliation
     // is in progress.
-    SetPending,
+    Pending,
 
     // Create the pod to download the video and/or thumbnail. Subsequent
     // reconciliations will update the Video's status to reflect the
@@ -87,16 +89,16 @@ enum VideoAction {
     // Delete the download pod. This is done when the Video resource is
     // deleted and when the download pod needs to be deleted to proceed
     // with reconciliation.
-    Delete,
+    DeleteDownloadPod,
 
     // The download pod is still downloading the video and/or thumbnail.
-    SetProgress(ProgressOptions),
+    Progress(ProgressOptions),
 
     // Download pod has finished downloading the video and/or thumbnail.
-    SetSucceeded,
+    Succeeded,
 
     // Download pod has failed with an error message.
-    SetFailure(FailureOptions),
+    Failure(FailureOptions),
 
     // Nothing to do (reconciliation successful)
     NoOp,
@@ -136,7 +138,7 @@ async fn reconcile(video: Arc<Video>, context: Arc<ContextData>) -> Result<Actio
 
     // Write phase of the reconciliation loop.
     match action {
-        VideoAction::SetPending => {
+        VideoAction::Pending => {
             // Update the status of the resource to reflect that reconciliation is in progress.
             video::pending(client, &name, &namespace, video.as_ref()).await?;
 
@@ -157,7 +159,25 @@ async fn reconcile(video: Arc<Video>, context: Arc<ContextData>) -> Result<Actio
             // Download pod will take at least a couple seconds to start.
             Ok(Action::requeue(Duration::from_secs(3)))
         }
-        VideoAction::SetProgress(options) => {
+        VideoAction::DeleteDownloadPod => {
+            // Deletes any subresources related to this `Video` resources. If and only if all subresources
+            // are deleted, the finalizer is removed and Kubernetes is free to remove the `Video` resource.
+            video::delete_download_pod(client.clone(), &name, &namespace).await?;
+
+            // Once the deployment is successfully removed, remove the finalizer to make it possible
+            // for Kubernetes to delete the `Video` resource (if needed)
+            video::finalizer::delete(client, &name, &namespace).await?;
+
+            if video.meta().deletion_timestamp.is_some() {
+                // No need to requeue deleted objects.
+                return Ok(Action::await_change());
+            }
+
+            // Delete was requested explicitly and the resource isn't pending deletion.
+            // Requeue the resource to be immediately reconciled again.
+            Ok(Action::requeue(Duration::ZERO))
+        }
+        VideoAction::Progress(options) => {
             // Update the status of the resource to reflect that the
             // download is in progress. In the case that no start time
             // is provided, set the Video phase to "Starting".
@@ -182,7 +202,7 @@ async fn reconcile(video: Arc<Video>, context: Arc<ContextData>) -> Result<Actio
             // before completion occurs.
             Ok(Action::requeue(Duration::from_secs(3)))
         }
-        VideoAction::SetSucceeded => {
+        VideoAction::Succeeded => {
             // Update the status of the resource to reflect download completion.
             video::success(client.clone(), &name, &namespace, video.as_ref()).await?;
 
@@ -195,7 +215,7 @@ async fn reconcile(video: Arc<Video>, context: Arc<ContextData>) -> Result<Actio
             // Requeue immediately.
             Ok(Action::requeue(Duration::ZERO))
         }
-        VideoAction::SetFailure(options) => {
+        VideoAction::Failure(options) => {
             // Update the status of the resource to communicate the error.
             video::failure(client.clone(), &name, &namespace, video.as_ref(), options).await?;
 
@@ -203,24 +223,6 @@ async fn reconcile(video: Arc<Video>, context: Arc<ContextData>) -> Result<Actio
             video::delete_download_pod(client, &name, &namespace).await?;
 
             // Requeue immediately.
-            Ok(Action::requeue(Duration::ZERO))
-        }
-        VideoAction::Delete => {
-            // Deletes any subresources related to this `Video` resources. If and only if all subresources
-            // are deleted, the finalizer is removed and Kubernetes is free to remove the `Video` resource.
-            video::delete_download_pod(client.clone(), &name, &namespace).await?;
-
-            // Once the deployment is successfully removed, remove the finalizer to make it possible
-            // for Kubernetes to delete the `Video` resource (if needed)
-            video::finalizer::delete(client, &name, &namespace).await?;
-
-            if video.meta().deletion_timestamp.is_some() {
-                // No need to requeue deleted objects.
-                return Ok(Action::await_change());
-            }
-
-            // Delete was requested explicitly and the resource isn't pending deletion.
-            // Requeue the resource to be immediately reconciled again.
             Ok(Action::requeue(Duration::ZERO))
         }
         VideoAction::NoOp => {
@@ -236,7 +238,7 @@ async fn bucket_has_obj(bucket: Bucket, key: &str) -> Result<bool, Error> {
     let (head, code) = bucket.head_object(key).await?;
     if code == 404 {
         // The object does not exist
-        return Ok(true);
+        return Ok(false);
     }
     Ok(head.content_length.unwrap_or(0) > 0)
 }
@@ -245,12 +247,14 @@ async fn bucket_has_obj(bucket: Bucket, key: &str) -> Result<bool, Error> {
 /// video's metadata. This requires deserializing the
 /// metadata and iterating over its contents to replace
 /// the template variables with their values.
-fn template_key(video: &Video, template: &str) -> Result<String, Error> {
-    let mut result = template.to_owned();
-    // Parse the metadata into a generic json object
-    let metadata: serde_json::Value = video.spec.metadata.parse()?;
+fn template_key(metadata: &serde_json::Value, template: &str) -> Result<String, Error> {
+    // Parse the metadata into a generic json object.
+    let metadata = metadata
+        .as_object()
+        .ok_or_else(|| Error::UserInputError("metadata must be a json object".to_owned()))?;
     // Iterate over the key-value pairs and replace the template variables.
-    for (key, value) in metadata.as_object().unwrap() {
+    let mut result = template.to_owned();
+    for (key, value) in metadata {
         // Default to an empty string if the value is not a string.
         let value = value.as_str().unwrap_or("");
         // Replace the template variable with the value.
@@ -260,7 +264,11 @@ fn template_key(video: &Video, template: &str) -> Result<String, Error> {
 }
 
 /// Returns true if the video needs to be downloaded.
-async fn needs_video_download(client: Client, video: &Video) -> Result<bool, Error> {
+async fn needs_video_download(
+    client: Client,
+    metadata: &serde_json::Value,
+    video: &Video,
+) -> Result<bool, Error> {
     let (bucket, template) = match get_video_output(client, video).await? {
         // Resource is requesting video output.
         Some(v) => v,
@@ -270,21 +278,25 @@ async fn needs_video_download(client: Client, video: &Video) -> Result<bool, Err
         None => return Ok(false),
     };
     // Conver the template into the actual S3 object key.
-    let key = template_key(video, &template)?;
+    let key = template_key(metadata, &template)?;
     // Check if the object exists and is not empty.
     bucket_has_obj(bucket, &key).await
 }
 
 /// Returns true if the thumbnail needs to be downloaded.
-async fn needs_thumbnail_download(client: Client, video: &Video) -> Result<bool, Error> {
+async fn needs_thumbnail_download(
+    client: Client,
+    metadata: &serde_json::Value,
+    video: &Video,
+) -> Result<bool, Error> {
     let (bucket, template) = match get_thumbnail_output(client, video).await? {
         // Resource is requesting thumbnail output.
         Some(v) => v,
-        // User is not requesting thumbnail output.
+        // Resource is not requesting thumbnail output.
         None => return Ok(false),
     };
     // Convert the template into the actual S3 object key.
-    let key = template_key(video, &template)?;
+    let key = template_key(metadata, &template)?;
     // Check if the object exists and is not empty.
     bucket_has_obj(bucket, &key).await
 }
@@ -311,15 +323,31 @@ async fn get_download_pod(client: Client, video: &Video) -> Result<Option<Pod>, 
 /// and/or the thumbnail should be downloaded. Both checks
 /// are made concurrently for maximum performance.
 async fn check_downloads(client: Client, video: &Video) -> Result<(bool, bool), Error> {
+    let metadata: serde_json::Value = video.spec.metadata.parse()?;
     let result = tokio::join!(
-        needs_video_download(client.clone(), video),
-        needs_thumbnail_download(client, video),
+        needs_video_download(client.clone(), &metadata, video),
+        needs_thumbnail_download(client, &metadata, video),
     );
     let download_video = result.0?;
     let download_thumbnail = result.1?;
     Ok((download_video, download_thumbnail))
 }
 
+/// Returns the secret value for the given key.
+/// This requires an allocation because it's unclear
+/// how to pass &ByteString into std::str::from_utf8
+/// and still satisfy the borrow checker.
+fn get_secret_value(secret: &Secret, key: &str) -> Result<Option<String>, Error> {
+    Ok(match secret.data {
+        Some(ref data) => match data.get(key) {
+            Some(s) => Some(serde_json::to_string(s)?),
+            None => None,
+        },
+        None => None,
+    })
+}
+
+/// Returns the S3 credentials for the given S3OutputSpec.
 async fn get_s3_creds(
     client: Client,
     namespace: &str,
@@ -327,15 +355,8 @@ async fn get_s3_creds(
 ) -> Result<Credentials, Error> {
     let api: Api<Secret> = Api::namespaced(client, namespace);
     let secret: Secret = api.get(&spec.secret).await?;
-    let data = secret.data.unwrap_or(Default::default());
-    let access_key_id: Option<String> = match data.get("access_key_id") {
-        Some(s) => Some(serde_json::to_string(s)?),
-        None => None,
-    };
-    let secret_access_key: Option<String> = match data.get("secret_access_key") {
-        Some(s) => Some(serde_json::to_string(s)?),
-        None => None,
-    };
+    let access_key_id = get_secret_value(&secret, "access_key_id")?;
+    let secret_access_key = get_secret_value(&secret, "secret_access_key")?;
     Ok(Credentials::new(
         access_key_id.as_deref(),
         secret_access_key.as_deref(),
@@ -344,8 +365,6 @@ async fn get_s3_creds(
         None, // profile
     )?)
 }
-
-const DEFAULT_REGION: &str = "us-east-1";
 
 /// Returns the S3 Region object for the given S3OutputSpec.
 fn get_s3_region(spec: &S3OutputSpec) -> Result<Region, Error> {
@@ -363,8 +382,6 @@ fn get_s3_region(spec: &S3OutputSpec) -> Result<Region, Error> {
         None => region.parse()?,
     })
 }
-
-const DEFAULT_TEMPLATE: &str = "%(id)s.%(ext)s";
 
 /// Returns the S3 Bucket and key template for the given S3OutputSpec.
 async fn output_from_spec(
@@ -388,7 +405,9 @@ async fn get_video_output(
     video: &Video,
 ) -> Result<Option<(Bucket, String)>, Error> {
     match video.spec.output.video.as_ref().unwrap().s3.as_ref() {
-        Some(spec) => Ok(Some(output_from_spec(client, video.namespace().as_ref().unwrap(), spec).await?)),
+        Some(spec) => Ok(Some(
+            output_from_spec(client, video.namespace().as_ref().unwrap(), spec).await?,
+        )),
         None => Ok(None),
     }
 }
@@ -399,7 +418,9 @@ async fn get_thumbnail_output(
     video: &Video,
 ) -> Result<Option<(Bucket, String)>, Error> {
     match video.spec.output.thumbnail.as_ref().unwrap().s3.as_ref() {
-        Some(spec) => Ok(Some(output_from_spec(client, video.namespace().as_ref().unwrap(), spec).await?)),
+        Some(spec) => Ok(Some(
+            output_from_spec(client, video.namespace().as_ref().unwrap(), spec).await?,
+        )),
         None => Ok(None),
     }
 }
@@ -422,14 +443,14 @@ async fn determine_download_success_action(
     if get_phase(video)? != VideoPhase::Succeeded {
         // Mark the Video resource as succeeded before
         // garbage collecting the download pod.
-        return Ok(Some(VideoAction::SetSucceeded));
+        return Ok(Some(VideoAction::Succeeded));
     }
     match get_download_pod(client, video).await? {
         // Garbage collect the download pod. Given that
         // the Delete action is invoked after the pod
         // succeeds, this branch *shouldn't* be reached,
         // but for safety we handle it anyway.
-        Some(_) => Ok(Some(VideoAction::Delete)),
+        Some(_) => Ok(Some(VideoAction::DeleteDownloadPod)),
         // Do nothing and proceed with reconciliation.
         None => Ok(None),
     }
@@ -439,7 +460,6 @@ async fn determine_download_success_action(
 /// exists and we need to check its status.
 async fn determine_download_pod_action(
     client: Client,
-    video: &Video,
     pod: Pod,
 ) -> Result<Option<VideoAction>, Error> {
     // Check the status of the download pod.
@@ -463,32 +483,32 @@ async fn determine_download_pod_action(
                             "download pod is not scheduled: {}",
                             condition.message.as_ref().unwrap()
                         );
-                        return Ok(Some(VideoAction::SetFailure(FailureOptions { message })));
+                        return Ok(Some(VideoAction::Failure(FailureOptions { message })));
                     }
                 }
             }
             // Download pod is Pending without error.
             // Mark the Video phase as being in-progress.
-            Ok(Some(VideoAction::SetProgress(ProgressOptions {
+            Ok(Some(VideoAction::Progress(ProgressOptions {
                 start_time: None,
             })))
         }
         "Running" => {
             // Download is in progress.
             // TODO: report verbose download statistics.
-            Ok(Some(VideoAction::SetProgress(ProgressOptions {
+            Ok(Some(VideoAction::Progress(ProgressOptions {
                 start_time: pod.creation_timestamp(),
             })))
         }
         "Succeeded" => {
             // Download is completed.
-            Ok(Some(VideoAction::SetSucceeded))
+            Ok(Some(VideoAction::Succeeded))
         }
         _ => {
             // Report error, delete pod, and re-create.
             // TODO: find way to extract a verbose error message from the pod.
             let message = format!("pod is in phase {}", phase);
-            Ok(Some(VideoAction::SetFailure(FailureOptions { message })))
+            Ok(Some(VideoAction::Failure(FailureOptions { message })))
         }
     }
 }
@@ -505,11 +525,11 @@ async fn determine_download_action(
     // is optimized by checking the status of the download pod
     // first, as its existence implies that there were files
     // that previously needed downloading.
-    let pod: Pod = match get_download_pod(client.clone(), video).await? {
+    match get_download_pod(client.clone(), video).await? {
         // Download pod exists, no reason to check storage
         // as the results of `check_downloads` are cached
         // in the pod's spec.
-        Some(pod) => pod,
+        Some(pod) => determine_download_pod_action(client, pod).await,
         // Download pod does not exist, check storage to see
         // which files, if any, require downloading.
         None => {
@@ -523,16 +543,12 @@ async fn determine_download_action(
                 return determine_download_success_action(client, video).await;
             }
             // Create the download pod, downloading only the requested parts.
-            return Ok(Some(VideoAction::CreateDownloadPod(DownloadPodOptions {
+            Ok(Some(VideoAction::CreateDownloadPod(DownloadPodOptions {
                 download_video,
                 download_thumbnail,
-            })));
+            })))
         }
-    };
-
-    // Given that the download pod exists, the next action will
-    // be dictated by another function for organization's sake.
-    determine_download_pod_action(client, video, pod).await
+    }
 }
 
 /// needs_pending returns true if the video resource
@@ -546,7 +562,7 @@ fn needs_pending(video: &Video) -> bool {
 async fn determine_action(client: Client, video: &Video) -> Result<VideoAction, Error> {
     if video.meta().deletion_timestamp.is_some() {
         // We only want to garbage collect child resources.
-        return Ok(VideoAction::Delete);
+        return Ok(VideoAction::DeleteDownloadPod);
     };
 
     // Make sure the status object exists with a phase.
@@ -555,7 +571,7 @@ async fn determine_action(client: Client, video: &Video) -> Result<VideoAction, 
     // fields without having to check for None values.
     if needs_pending(video) {
         // The resource first appeared to the control.
-        return Ok(VideoAction::SetPending);
+        return Ok(VideoAction::Pending);
     }
 
     // Check if the video and/or thumbnail need to
