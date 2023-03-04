@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use futures::stream::StreamExt;
-use k8s_openapi::api::core::v1::{Pod, PodStatus};
+use k8s_openapi::api::core::v1::{Pod, PodStatus, Secret};
 use k8s_openapi::chrono::Utc;
 use kube::Resource;
 use kube::ResourceExt;
@@ -13,8 +13,9 @@ use tokio::time::Duration;
 use awsregion::Region;
 use s3::bucket::Bucket;
 use s3::creds::Credentials;
+use std::str::FromStr;
 
-use crate::crd::{Video, VideoPhase};
+use crate::crd::{Video, VideoPhase, S3OutputSpec};
 
 pub mod crd;
 mod video;
@@ -183,7 +184,13 @@ async fn reconcile(video: Arc<Video>, context: Arc<ContextData>) -> Result<Actio
         }
         VideoAction::SetSucceeded => {
             // Update the status of the resource to reflect download completion.
-            video::success(client, &name, &namespace, video.as_ref()).await?;
+            video::success(client.clone(), &name, &namespace, video.as_ref()).await?;
+
+            // Delete the download pod before the finalizer is removed.
+            video::delete_download_pod(client.clone(), &name, &namespace).await?;
+
+            // Remove the finalizer now that the download pod is gone.
+            video::finalizer::delete(client, &name, &namespace).await?;
 
             // Requeue immediately.
             Ok(Action::requeue(Duration::ZERO))
@@ -234,18 +241,51 @@ async fn bucket_has_obj(bucket: Bucket, key: &str) -> Result<bool, Error> {
     Ok(head.content_length.unwrap_or(0) > 0)
 }
 
+/// Returns the output key given the template and the
+/// video's metadata. This requires deserializing the
+/// metadata and iterating over its contents to replace
+/// the template variables with their values.
+fn template_key(video: &Video, template: &str) -> Result<String, Error> {
+    let mut result = template.to_owned();
+    // Parse the metadata into a generic json object
+    let metadata: serde_json::Value = video.spec.metadata.parse()?;
+    // Iterate over the key-value pairs and replace the template variables.
+    for (key, value) in metadata.as_object().unwrap() {
+        // Default to an empty string if the value is not a string.
+        let value = value.as_str().unwrap_or("");
+        // Replace the template variable with the value.
+        result = result.replace(&format!("%({})s", key), value);
+    }
+    Ok(result)
+}
+
 /// Returns true if the video needs to be downloaded.
 async fn needs_video_download(client: Client, video: &Video) -> Result<bool, Error> {
-    let bucket = get_video_bucket(client, video).await?;
-    // TODO: extract video key from resource
-    let key = video.name_any();
+    let (bucket, template) = match get_video_output(client, video).await? {
+        // Resource is requesting video output.
+        Some(v) => v,
+        // Resource is not configured to output video.
+        // This would be the case if the user only wants
+        // to download metadata and thumbnail.
+        None => return Ok(false),
+    };
+    // Conver the template into the actual S3 object key.
+    let key = template_key(video, &template)?;
+    // Check if the object exists and is not empty.
     bucket_has_obj(bucket, &key).await
 }
 
 /// Returns true if the thumbnail needs to be downloaded.
 async fn needs_thumbnail_download(client: Client, video: &Video) -> Result<bool, Error> {
-    let bucket = get_thumbnail_bucket(client, video).await?;
-    let key = video.name_any();
+    let (bucket, template) = match get_thumbnail_output(client, video).await? {
+        // Resource is requesting thumbnail output.
+        Some(v) => v,
+        // User is not requesting thumbnail output.
+        None => return Ok(false),
+    };
+    // Convert the template into the actual S3 object key.
+    let key = template_key(video, &template)?;
+    // Check if the object exists and is not empty.
     bucket_has_obj(bucket, &key).await
 }
 
@@ -271,8 +311,6 @@ async fn get_download_pod(client: Client, video: &Video) -> Result<Option<Pod>, 
 /// and/or the thumbnail should be downloaded. Both checks
 /// are made concurrently for maximum performance.
 async fn check_downloads(client: Client, video: &Video) -> Result<(bool, bool), Error> {
-    // TODO: only check for thumbnail if configured to do so
-    // TODO: only check for video if configured to do so
     let result = tokio::join!(
         needs_video_download(client.clone(), video),
         needs_thumbnail_download(client, video),
@@ -282,25 +320,88 @@ async fn check_downloads(client: Client, video: &Video) -> Result<(bool, bool), 
     Ok((download_video, download_thumbnail))
 }
 
-/// Returns the Bucket to be used for video file storage.
-async fn get_video_bucket(client: Client, video: &Video) -> Result<Bucket, Error> {
-    // TODO: properly extract bucket name from resource
-    let bucket_name = "rust-s3-test";
-    let region_name = "nyc3".to_string();
-    let endpoint = "https://nyc3.digitaloceanspaces.com".to_string();
-    let region = Region::Custom {
-        region: region_name,
-        endpoint,
+async fn get_s3_creds(
+    client: Client,
+    namespace: &str,
+    spec: &S3OutputSpec,
+) -> Result<Credentials, Error> {
+    let api: Api<Secret> = Api::namespaced(client, namespace);
+    let secret: Secret = api.get(&spec.secret).await?;
+    let data = secret.data.unwrap_or(Default::default());
+    let access_key_id: Option<String> = match data.get("access_key_id") {
+        Some(s) => Some(serde_json::to_string(s)?),
+        None => None,
     };
-    // TODO: get s3 credentials from kubernetes secret
-    let credentials = Credentials::default()?;
-    Ok(Bucket::new(bucket_name, region, credentials)?)
+    let secret_access_key: Option<String> = match data.get("secret_access_key") {
+        Some(s) => Some(serde_json::to_string(s)?),
+        None => None,
+    };
+    Ok(Credentials::new(
+        access_key_id.as_deref(),
+        secret_access_key.as_deref(),
+        None, // security token
+        None, // session token
+        None, // profile
+    )?)
+}
+
+const DEFAULT_REGION: &str = "us-east-1";
+
+/// Returns the S3 Region object for the given S3OutputSpec.
+fn get_s3_region(spec: &S3OutputSpec) -> Result<Region, Error> {
+    let region = match spec.region.as_ref() {
+        Some(region) => region.to_owned(),
+        None => DEFAULT_REGION.to_owned(),
+    };
+    Ok(match spec.endpoint.as_ref() {
+        // Custom endpoint support (e.g. https://nyc3.digitaloceanspaces.com)
+        Some(endpoint) => Region::Custom {
+            region,
+            endpoint: endpoint.clone(),
+        },
+        // The Region object is based solely on the region name.
+        None => region.parse()?,
+    })
+}
+
+const DEFAULT_TEMPLATE: &str = "%(id)s.%(ext)s";
+
+/// Returns the S3 Bucket and key template for the given S3OutputSpec.
+async fn output_from_spec(
+    client: Client,
+    namespace: &str,
+    spec: &S3OutputSpec,
+) -> Result<(Bucket, String), Error> {
+    let region = get_s3_region(spec)?;
+    let credentials = get_s3_creds(client, namespace, spec).await?;
+    let bucket = Bucket::new(&spec.bucket, region, credentials)?;
+    let template = match spec.template {
+        Some(ref template) => template.clone(),
+        None => DEFAULT_TEMPLATE.to_owned(),
+    };
+    Ok((bucket, template))
+}
+
+/// Returns the Bucket to be used for video file storage.
+async fn get_video_output(
+    client: Client,
+    video: &Video,
+) -> Result<Option<(Bucket, String)>, Error> {
+    match video.spec.output.video.as_ref().unwrap().s3.as_ref() {
+        Some(spec) => Ok(Some(output_from_spec(client, video.namespace().as_ref().unwrap(), spec).await?)),
+        None => Ok(None),
+    }
 }
 
 /// Returns the Bucket to be used for thumbnail storage.
-async fn get_thumbnail_bucket(client: Client, video: &Video) -> Result<Bucket, Error> {
-    // TODO: same code but for thumbnail bucket
-    get_video_bucket(client, video).await
+async fn get_thumbnail_output(
+    client: Client,
+    video: &Video,
+) -> Result<Option<(Bucket, String)>, Error> {
+    match video.spec.output.thumbnail.as_ref().unwrap().s3.as_ref() {
+        Some(spec) => Ok(Some(output_from_spec(client, video.namespace().as_ref().unwrap(), spec).await?)),
+        None => Ok(None),
+    }
 }
 
 /// Returns the phase of the video.
@@ -380,11 +481,8 @@ async fn determine_download_pod_action(
             })))
         }
         "Succeeded" => {
-            // Download is completed. Delete the pod. When the
-            // Video is requeued, the files will not need downloading,
-            // and the pod will be deleted after the Video phase is
-            // flagged as `Succeeded`.
-            Ok(Some(VideoAction::Delete))
+            // Download is completed.
+            Ok(Some(VideoAction::SetSucceeded))
         }
         _ => {
             // Report error, delete pod, and re-create.
@@ -524,4 +622,18 @@ pub enum Error {
     /// Generic error based on a string description
     #[error("error: {0}")]
     GenericError(String),
+
+    /// Error converting a string to UTF-8
+    #[error("UTF-8 error: {source}")]
+    Utf8Error {
+        #[from]
+        source: std::str::Utf8Error,
+    },
+
+    /// Serde json decode error
+    #[error("decode json error: {source}")]
+    JSONError {
+        #[from]
+        source: serde_json::Error,
+    },
 }

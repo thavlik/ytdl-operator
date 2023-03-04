@@ -17,19 +17,14 @@ pub struct S3OutputSpec {
     // S3 region (e.g. us-east-1)
     pub region: Option<String>,
 
-    // Optional S3 key prefix. This field is also templated
-    // with the metadata json, so it can contain any of the
-    // fields from the youtube-dl output template.
-    pub prefix: Option<String>,
-}
-
-#[derive(Deserialize, Serialize, Clone, Debug, Default, JsonSchema, PartialEq)]
-pub struct VideoStorageSpec {
     // Object key template. Refer to youtube-dl documentation:
     // https://github.com/ytdl-org/youtube-dl#output-template
     // The default value is "%(id)s.%(ext)s"
     pub template: Option<String>,
+}
 
+#[derive(Deserialize, Serialize, Clone, Debug, Default, JsonSchema, PartialEq)]
+pub struct VideoStorageSpec {
     // Amazon S3-compatible output. This is currently the only
     // supported output, but is still optional because others
     // could be supported in the future.
