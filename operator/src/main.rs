@@ -1,7 +1,5 @@
-pub mod crd;
-
-mod video;
 mod reconcile_video;
+mod video;
 
 use reconcile_video::reconcile_video_main;
 

@@ -1,12 +1,15 @@
-use crate::crd::{Video, VideoPhase, VideoStatus};
-use k8s_openapi::api::core::v1::{Container, Pod, PodSpec};
+use k8s_openapi::api::core::v1::{
+    Container, EnvVar, EnvVarSource, Pod, PodSpec, SecretKeySelector,
+};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::api::{DeleteParams, ObjectMeta, Patch, PatchParams, PostParams};
 use kube::ResourceExt;
 use kube::{Api, Client, Error};
 use std::collections::BTreeMap;
+use ytdl_operator_types::{Video, VideoPhase, VideoStatus};
 
 const MANAGER_NAME: &str = "ytdl-operator";
+const DEFAULT_EXECUTOR_IMAGE: &str = "thavlik/ytdl-executor:latest";
 
 /// A central tenet of this project is to only access
 /// the external video service from within pods that
@@ -35,32 +38,92 @@ pub async fn create_download_pod(
     client: Client,
     name: &str,
     namespace: &str,
+    video: &Video,
+    service_account_name: String,
     options: DownloadPodOptions,
 ) -> Result<Pod, Error> {
     let mut labels: BTreeMap<String, String> = BTreeMap::new();
     labels.insert("app".to_owned(), name.to_owned());
 
-    // TODO: configure vpn sidecar
+    // Inject the spec as an environment variable.
+    // Properly handling the error here is nontrivial
+    // because this function returns kube errors only.
+    // In any case, this should never fail, and if it
+    // does, it's a serious bug that warrants detecting.
+    let spec: String = serde_json::to_string(&video.spec).expect("failed to marshal spec to json");
+
+    // Determine the executor image.
+    let image: String = video
+        .spec
+        .executor
+        .as_deref()
+        .unwrap_or(DEFAULT_EXECUTOR_IMAGE)
+        .to_owned();
+
+    // VPN sidecar container. I've personally tested
+    // NordVPN on k8s, but it should work with any.
+    // TODO: support more VPNs
+    // TODO: https://github.com/thavlik/vpn-operator
+    let vpn_sidecar = Container {
+        name: "nordvpn".to_owned(),
+        image: Some("thavlik/nordvpn:latest".to_owned()),
+        env: Some(vec![
+            EnvVar {
+                name: "NORD_USERNAME".to_owned(),
+                value_from: Some(EnvVarSource {
+                    secret_key_ref: Some(SecretKeySelector {
+                        name: Some("nordvpn-creds".to_owned()),
+                        key: "username".to_owned(),
+                        ..SecretKeySelector::default()
+                    }),
+                    ..EnvVarSource::default()
+                }),
+                ..EnvVar::default()
+            },
+            EnvVar {
+                name: "NORD_PASSWORD".to_owned(),
+                value_from: Some(EnvVarSource {
+                    secret_key_ref: Some(SecretKeySelector {
+                        name: Some("nordvpn-creds".to_owned()),
+                        key: "password".to_owned(),
+                        ..SecretKeySelector::default()
+                    }),
+                    ..EnvVarSource::default()
+                }),
+                ..EnvVar::default()
+            },
+        ]),
+        ..Container::default()
+    };
 
     let pod: Pod = Pod {
         metadata: ObjectMeta {
             name: Some(name.to_owned()),
             namespace: Some(namespace.to_owned()),
-            labels: Some(labels.clone()),
+            labels: Some(labels),
             ..ObjectMeta::default()
         },
         spec: Some(PodSpec {
+            service_account_name: Some(service_account_name),
             containers: vec![
                 Container {
                     name: "executor".to_owned(),
-                    image: Some("thavlik/ytdl-executor:latest".to_owned()),
+                    image: Some(image),
+                    env: Some(vec![
+                        EnvVar {
+                            name: "SPEC".to_owned(),
+                            value: Some(spec),
+                            ..EnvVar::default()
+                        },
+                        EnvVar {
+                            name: "NAMESPACE".to_owned(),
+                            value: Some(namespace.to_owned()),
+                            ..EnvVar::default()
+                        },
+                    ]),
                     ..Container::default()
                 },
-                Container {
-                    name: "nordvpn".to_owned(),
-                    image: Some("thavlik/nordvpn:latest".to_owned()),
-                    ..Container::default()
-                },
+                vpn_sidecar,
             ],
             ..PodSpec::default()
         }),

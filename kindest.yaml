@@ -1,4 +1,4 @@
 dependencies:
 - nordvpn
-build:
-  name: thavlik/ytdl-operator
+- executor
+- operator

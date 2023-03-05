@@ -20,7 +20,7 @@ pub struct S3OutputSpec {
     // Object key template. Refer to youtube-dl documentation:
     // https://github.com/ytdl-org/youtube-dl#output-template
     // The default value is "%(id)s.%(ext)s"
-    pub template: Option<String>,
+    pub key: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default, JsonSchema, PartialEq)]
@@ -227,6 +227,10 @@ pub struct VideoSpec {
     // The actual input URL passed to youtube-dl is the
     // `webpage_url` field from this structure.
     pub metadata: String,
+
+    // Override for ytdl-executor docker image. Default
+    // is thavlik/ytdl-executor:latest
+    pub executor: Option<String>,
 
     // Extra arguments to pass to youtube-dl, e.g.
     // `--recode-video mp4`. Do not specify -o as the output

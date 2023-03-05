@@ -13,7 +13,7 @@ WORKDIR /
 RUN cargo new ytdl-operator
 WORKDIR /ytdl-operator
 COPY Cargo.toml .
-COPY Cargo.lock .
+#COPY Cargo.lock .
 RUN cargo build \
     && rm src/*.rs \
     && rm ./target/debug/ytdl-operator*

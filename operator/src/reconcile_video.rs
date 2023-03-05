@@ -1,23 +1,19 @@
+use awsregion::Region;
 use futures::stream::StreamExt;
-use std::str::FromStr;
-use std::sync::Arc;
-use tokio::time::Duration;
 use k8s_openapi::api::core::v1::{Pod, PodStatus, Secret};
 use kube::Resource;
 use kube::ResourceExt;
 use kube::{
-    api::ListParams,
-    client::Client,
-    runtime::controller::Action,
-    runtime::Controller,
-    Api,
+    api::ListParams, client::Client, runtime::controller::Action, runtime::Controller, Api,
 };
-use awsregion::Region;
 use s3::bucket::Bucket;
 use s3::creds::Credentials;
+use std::str::FromStr;
+use std::sync::Arc;
+use tokio::time::Duration;
 
-use crate::crd::{S3OutputSpec, Video, VideoPhase};
 use crate::video::{self, DownloadPodOptions, FailureOptions, ProgressOptions};
+use ytdl_operator_types::{S3OutputSpec, Video, VideoPhase};
 
 const DEFAULT_REGION: &str = "us-east-1";
 const DEFAULT_TEMPLATE: &str = "%(id)s.%(ext)s";
@@ -29,9 +25,17 @@ pub async fn reconcile_video_main() {
         .await
         .expect("Expected a valid KUBECONFIG environment variable.");
 
+    // The executor service account name is required for the download pod
+    // to access credentials for s3 et al.
+    let service_account_name = get_executor_service_account_name()
+        .expect("Expected a valid executor service account name.");
+
     // Preparation of resources used by the `kube_runtime::Controller`
     let crd_api: Api<Video> = Api::all(kubernetes_client.clone());
-    let context: Arc<ContextData> = Arc::new(ContextData::new(kubernetes_client.clone()));
+    let context: Arc<ContextData> = Arc::new(ContextData::new(
+        kubernetes_client.clone(),
+        service_account_name,
+    ));
 
     // The controller comes from the `kube_runtime` crate and manages the reconciliation process.
     // It requires the following information:
@@ -58,6 +62,9 @@ pub async fn reconcile_video_main() {
 struct ContextData {
     /// Kubernetes client to make Kubernetes API requests with. Required for K8S resource management.
     client: Client,
+
+    /// Service account name for the download pod. The download pod needs access to secrets.
+    service_account_name: String,
 }
 
 impl ContextData {
@@ -66,8 +73,11 @@ impl ContextData {
     /// # Arguments:
     /// - `client`: A Kubernetes client to make Kubernetes REST API requests with. Resources
     /// will be created and deleted with this client.
-    pub fn new(client: Client) -> Self {
-        ContextData { client }
+    pub fn new(client: Client, service_account_name: String) -> Self {
+        ContextData {
+            client,
+            service_account_name,
+        }
     }
 }
 
@@ -103,7 +113,7 @@ enum VideoAction {
 
 /// Main reconciliation loop for the `Video` resource.
 async fn reconcile(video: Arc<Video>, context: Arc<ContextData>) -> Result<Action, Error> {
-    // The `Client` is shared -> a clone from the reference is obtained
+    // The `Client` is shared -> a clone from the reference is obtained.
     let client: Client = context.client.clone();
 
     let namespace: String = match video.namespace() {
@@ -118,7 +128,9 @@ async fn reconcile(video: Arc<Video>, context: Arc<ContextData>) -> Result<Actio
         // the namespace could be checked for existence first.
         Some(namespace) => namespace,
     };
-    let name = video.name_any(); // Name of the Video resource is used to name the subresources as well.
+
+    // Name of the Video resource is used to name the subresources as well.
+    let name = video.name_any();
 
     // Read phase of the reconciliation loop.
     let action = determine_action(client.clone(), &video).await?;
@@ -148,7 +160,15 @@ async fn reconcile(video: Arc<Video>, context: Arc<ContextData>) -> Result<Actio
             video::finalizer::add(client.clone(), &name, &namespace).await?;
 
             // Create the download pod.
-            video::create_download_pod(client.clone(), &name, &namespace, options).await?;
+            video::create_download_pod(
+                client.clone(),
+                &name,
+                &namespace,
+                video.as_ref(),
+                context.service_account_name.clone(),
+                options,
+            )
+            .await?;
 
             // Update the phase to reflect that the download has started.
             video::starting(client, &name, &namespace, video.as_ref()).await?;
@@ -227,6 +247,10 @@ async fn reconcile(video: Arc<Video>, context: Arc<ContextData>) -> Result<Actio
             Ok(Action::await_change())
         }
     }
+}
+
+fn get_executor_service_account_name() -> Result<String, Error> {
+    Ok(std::env::var("EXECUTOR_SERVICE_ACCOUNT_NAME")?)
 }
 
 /// Returns true if the bucket has an object with the given key
@@ -389,8 +413,8 @@ async fn output_from_spec(
     let region = get_s3_region(spec)?;
     let credentials = get_s3_creds(client, namespace, spec).await?;
     let bucket = Bucket::new(&spec.bucket, region, credentials)?;
-    let template = match spec.template {
-        Some(ref template) => template.clone(),
+    let template = match spec.key {
+        Some(ref key) => key.clone(),
         None => DEFAULT_TEMPLATE.to_owned(),
     };
     Ok((bucket, template))
@@ -648,5 +672,12 @@ pub enum Error {
     JSONError {
         #[from]
         source: serde_json::Error,
+    },
+
+    /// Environment variable error
+    #[error("missing environment variable: {source}")]
+    EnvError {
+        #[from]
+        source: std::env::VarError,
     },
 }
