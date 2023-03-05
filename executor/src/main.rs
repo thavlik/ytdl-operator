@@ -24,7 +24,7 @@ async fn main() {
     let spec: ExecutorSpec = get_spec()
         .expect("failed to get executor spec from environment");
     println!("waiting for VPN to connect");
-    ready::wait_for_vpn().await.expect("failed to wait for ready file");
+    ready::wait_for_vpn().await.expect("vpn failed to connect");
     println!("VPN is connected");
     match (args.download_video, args.download_thumbnail) {
         (true, true) => {
