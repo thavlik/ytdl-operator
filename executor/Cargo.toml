@@ -5,10 +5,15 @@ authors = ["Tom Havlik (thavlik@protonmail.com)"]
 edition = "2018"
 
 [dependencies]
+ytdl-operator-types = { path = "../types" }
 tokio = { version = "1.0", features = [
     "macros",
     "rt-multi-thread",
 ] } # Macros for easy project setup and testing, multi-threaded runtime for best utilization of resources
+kube = { version = "0.78.0", default-features = true, features = [
+    "derive",
+    "runtime",
+] } # Library for talking to Kubernetes API
 futures = "0.3"
 # All serde dependencies are used to serialize/deserialize CRDs and other Kubernetes-related structs
 serde = "1"
@@ -17,3 +22,4 @@ thiserror = "1"    # Custom Error definitions and convenient error mappings
 rust-s3 = { version = "0.32" }
 aws-region = "0.25.1"
 aws-creds = "0.30"
+clap = { version = "4.1.8", features = ["derive"] }
