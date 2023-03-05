@@ -6,7 +6,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::api::{DeleteParams, ObjectMeta, Patch, PatchParams, PostParams};
 use kube::{Api, Client, Error};
 use std::collections::BTreeMap;
-use ytdl_operator_types::{Executor, ExecutorPhase, ExecutorStatus};
+use ytdl_types::{Executor, ExecutorPhase, ExecutorStatus};
 
 const MANAGER_NAME: &str = "ytdl-operator";
 const DEFAULT_EXECUTOR_IMAGE: &str = "thavlik/ytdl-executor:latest";
@@ -96,8 +96,8 @@ pub async fn create_pod(
     // because this function returns kube errors only.
     // In any case, this should never fail, and if it
     // does, it's a serious bug that warrants detecting.
-    let spec: String =
-        serde_json::to_string(&instance.spec).expect("failed to marshal spec to json");
+    let resource: String =
+        serde_json::to_string(instance).expect("failed to marshal resource to json");
 
     // Determine the executor image.
     let image: String = instance
@@ -148,18 +148,11 @@ pub async fn create_pod(
                     name: "executor".to_owned(),
                     image: Some(image),
                     command: Some(command),
-                    env: Some(vec![
-                        EnvVar {
-                            name: "SPEC".to_owned(),
-                            value: Some(spec),
-                            ..EnvVar::default()
-                        },
-                        EnvVar {
-                            name: "NAMESPACE".to_owned(),
-                            value: Some(namespace.to_owned()),
-                            ..EnvVar::default()
-                        },
-                    ]),
+                    env: Some(vec![EnvVar {
+                        name: "RESOURCE".to_owned(),
+                        value: Some(resource),
+                        ..EnvVar::default()
+                    }]),
                     volume_mounts: Some(vec![VolumeMount {
                         name: "shared".to_owned(),
                         mount_path: "/shared".to_owned(),

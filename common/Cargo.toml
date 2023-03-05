@@ -1,29 +1,29 @@
 [package]
-name = "ytdl-executor"
+name = "ytdl-common"
 version = "0.1.0"
 authors = ["Tom Havlik (thavlik@protonmail.com)"]
 edition = "2018"
 
 [dependencies]
 ytdl-types = { path = "../types" }
-ytdl-common = { path = "../common" }
 tokio = { version = "1.0", features = [
     "macros",
     "rt-multi-thread",
-    "process"
 ] } # Macros for easy project setup and testing, multi-threaded runtime for best utilization of resources
-tokio-util = { version = "0.7.7", features=["compat"] }
 kube = { version = "0.78.0", default-features = true, features = [
     "derive",
     "runtime",
 ] } # Library for talking to Kubernetes API
+k8s-openapi = { version = "0.17", default-features = false, features = [
+    "v1_22",
+] } # Kube-rs depends on k8s-openapi
 futures = "0.3"
 # All serde dependencies are used to serialize/deserialize CRDs and other Kubernetes-related structs
 serde = "1"
 serde_json = "1.0"
+schemars = "0.8"
 thiserror = "1"    # Custom Error definitions and convenient error mappings
 rust-s3 = { version = "0.32" }
 aws-region = "0.25.1"
 aws-creds = "0.30"
-clap = { version = "4.1.8", features = ["derive"] }
 reqwest = "0.11"

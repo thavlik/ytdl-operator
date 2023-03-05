@@ -1,21 +1,17 @@
-use awsregion::Region;
 use futures::stream::StreamExt;
-use k8s_openapi::api::core::v1::{Pod, PodStatus, Secret};
+use k8s_openapi::api::core::v1::{Pod, PodStatus};
 use kube::Resource;
 use kube::ResourceExt;
 use kube::{
     api::ListParams, client::Client, runtime::controller::Action, runtime::Controller, Api,
 };
 use s3::bucket::Bucket;
-use s3::creds::Credentials;
 use std::sync::Arc;
 use tokio::time::Duration;
 
 use super::action::{self, DownloadPodOptions, FailureOptions, ProgressOptions};
-use ytdl_operator_types::{Executor, ExecutorPhase, S3OutputSpec};
-
-const DEFAULT_REGION: &str = "us-east-1";
-const DEFAULT_TEMPLATE: &str = "%(id)s.%(ext)s";
+use ytdl_common::{get_thumbnail_output, get_video_output, Error};
+use ytdl_types::{Executor, ExecutorPhase};
 
 pub async fn main() {
     // First, a Kubernetes client must be obtained using the `kube` crate
@@ -272,47 +268,13 @@ async fn bucket_has_obj(bucket: Bucket, key: &str) -> Result<bool, Error> {
     Ok(head.content_length.unwrap_or(0) > 0)
 }
 
-/// Returns the output key given the template and the
-/// video's metadata. This requires deserializing the
-/// metadata and iterating over its contents to replace
-/// the template variables with their values.
-fn template_key(metadata: &serde_json::Value, template: &str) -> Result<String, Error> {
-    // Parse the metadata into a generic json object.
-    let metadata = metadata
-        .as_object()
-        .ok_or_else(|| Error::UserInputError("metadata must be a json object".to_owned()))?;
-    // Iterate over the key-value pairs and replace the template variables.
-    let mut result = template.to_owned();
-    for (key, value) in metadata {
-        if result.find("%").is_none() {
-            // No more template variables to replace; stop early.
-            break;
-        }
-        // Format the key as it would appear in the template.
-        let key = format!("%({})s", key);
-        // Default to an empty string if the value is not a string.
-        let value = value.as_str().unwrap_or("");
-        // Replace the template variable with the value.
-        result = result.replace(&key, value);
-    }
-    if result.find("%").is_some() {
-        // There are still template variables that were not replaced.
-        // This is guaranteed to result in an invalid S3 object key.
-        // https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-keys.html
-        return Err(Error::UserInputError(
-            "metadata does not contain all template variables".to_owned(),
-        ));
-    }
-    Ok(result)
-}
-
 /// Returns true if the video needs to be downloaded.
 async fn needs_video_download(
     client: Client,
     metadata: &serde_json::Value,
     instance: &Executor,
 ) -> Result<bool, Error> {
-    let (bucket, template) = match get_video_output(client, instance).await? {
+    let (bucket, key) = match get_video_output(client, metadata, instance).await? {
         // Resource is requesting video output.
         Some(v) => v,
         // Resource is not configured to output video.
@@ -320,8 +282,6 @@ async fn needs_video_download(
         // to download metadata and thumbnail.
         None => return Ok(false),
     };
-    // Conver the template into the actual S3 object key.
-    let key = template_key(metadata, &template)?;
     // Check if the object exists and is not empty.
     bucket_has_obj(bucket, &key).await
 }
@@ -332,14 +292,12 @@ async fn needs_thumbnail_download(
     metadata: &serde_json::Value,
     instance: &Executor,
 ) -> Result<bool, Error> {
-    let (bucket, template) = match get_thumbnail_output(client, instance).await? {
+    let (bucket, key) = match get_thumbnail_output(client, metadata, instance).await? {
         // Resource is requesting thumbnail output.
         Some(v) => v,
         // Resource is not requesting thumbnail output.
         None => return Ok(false),
     };
-    // Convert the template into the actual S3 object key.
-    let key = template_key(metadata, &template)?;
     // Check if the object exists and is not empty.
     bucket_has_obj(bucket, &key).await
 }
@@ -374,98 +332,6 @@ async fn check_downloads(client: Client, instance: &Executor) -> Result<(bool, b
     let download_video = result.0?;
     let download_thumbnail = result.1?;
     Ok((download_video, download_thumbnail))
-}
-
-/// Returns the secret value for the given key.
-/// This requires an allocation because it's unclear
-/// how to pass &ByteString into std::str::from_utf8
-/// and still satisfy the borrow checker.
-fn get_secret_value(secret: &Secret, key: &str) -> Result<Option<String>, Error> {
-    Ok(match secret.data {
-        Some(ref data) => match data.get(key) {
-            Some(s) => Some(serde_json::to_string(s)?),
-            None => None,
-        },
-        None => None,
-    })
-}
-
-/// Returns the S3 credentials for the given S3OutputSpec.
-async fn get_s3_creds(
-    client: Client,
-    namespace: &str,
-    spec: &S3OutputSpec,
-) -> Result<Credentials, Error> {
-    let api: Api<Secret> = Api::namespaced(client, namespace);
-    let secret: Secret = api.get(&spec.secret).await?;
-    let access_key_id = get_secret_value(&secret, "access_key_id")?;
-    let secret_access_key = get_secret_value(&secret, "secret_access_key")?;
-    Ok(Credentials::new(
-        access_key_id.as_deref(),
-        secret_access_key.as_deref(),
-        None, // security token
-        None, // session token
-        None, // profile
-    )?)
-}
-
-/// Returns the S3 Region object for the given S3OutputSpec.
-fn get_s3_region(spec: &S3OutputSpec) -> Result<Region, Error> {
-    let region = match spec.region.as_ref() {
-        Some(region) => region.to_owned(),
-        None => DEFAULT_REGION.to_owned(),
-    };
-    Ok(match spec.endpoint.as_ref() {
-        // Custom endpoint support (e.g. https://nyc3.digitaloceanspaces.com)
-        Some(endpoint) => Region::Custom {
-            region,
-            endpoint: endpoint.clone(),
-        },
-        // The Region object is based solely on the region name.
-        None => region.parse()?,
-    })
-}
-
-/// Returns the S3 Bucket and key template for the given S3OutputSpec.
-async fn output_from_spec(
-    client: Client,
-    namespace: &str,
-    spec: &S3OutputSpec,
-) -> Result<(Bucket, String), Error> {
-    let region = get_s3_region(spec)?;
-    let credentials = get_s3_creds(client, namespace, spec).await?;
-    let bucket = Bucket::new(&spec.bucket, region, credentials)?;
-    let template = match spec.key {
-        Some(ref key) => key.clone(),
-        None => DEFAULT_TEMPLATE.to_owned(),
-    };
-    Ok((bucket, template))
-}
-
-/// Returns the Bucket to be used for video file storage.
-async fn get_video_output(
-    client: Client,
-    instance: &Executor,
-) -> Result<Option<(Bucket, String)>, Error> {
-    match instance.spec.output.video.as_ref().unwrap().s3.as_ref() {
-        Some(spec) => Ok(Some(
-            output_from_spec(client, instance.namespace().as_ref().unwrap(), spec).await?,
-        )),
-        None => Ok(None),
-    }
-}
-
-/// Returns the Bucket to be used for thumbnail storage.
-async fn get_thumbnail_output(
-    client: Client,
-    instance: &Executor,
-) -> Result<Option<(Bucket, String)>, Error> {
-    match instance.spec.output.thumbnail.as_ref().unwrap().s3.as_ref() {
-        Some(spec) => Ok(Some(
-            output_from_spec(client, instance.namespace().as_ref().unwrap(), spec).await?,
-        )),
-        None => Ok(None),
-    }
 }
 
 /// Returns the phase of the Executor.
@@ -641,62 +507,4 @@ async fn determine_action(client: Client, instance: &Executor) -> Result<Executo
 fn on_error(instance: Arc<Executor>, error: &Error, _context: Arc<ContextData>) -> Action {
     eprintln!("Reconciliation error:\n{:?}.\n{:?}", error, instance);
     Action::requeue(Duration::from_secs(5))
-}
-
-/// All errors possible to occur during reconciliation
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    /// Any error originating from the `kube-rs` crate
-    #[error("Kubernetes error: {source}")]
-    KubeError {
-        #[from]
-        source: kube::Error,
-    },
-
-    /// Any non-credentials errors from `rust-s3` crate
-    #[error("S3 service error: {source}")]
-    S3Error {
-        #[from]
-        source: s3::error::S3Error,
-    },
-
-    /// Any credentials errors from `rust-s3` crate
-    #[error("S3 credentials error: {source}")]
-    S3CredentialsError {
-        #[from]
-        source: awscreds::error::CredentialsError,
-    },
-
-    /// Error in user input or Executor resource definition, typically missing fields.
-    #[error("Invalid Executor CRD: {0}")]
-    UserInputError(String),
-
-    /// Executor status.phase value does not match any known phase.
-    #[error("Invalid Executor status.phase: {0}")]
-    InvalidPhase(String),
-
-    /// Generic error based on a string description
-    #[error("error: {0}")]
-    GenericError(String),
-
-    /// Error converting a string to UTF-8
-    #[error("UTF-8 error: {source}")]
-    Utf8Error {
-        #[from]
-        source: std::str::Utf8Error,
-    },
-
-    /// Serde json decode error
-    #[error("decode json error: {source}")]
-    JSONError {
-        #[from]
-        source: serde_json::Error,
-    },
-
-    /// Environment variable error
-    #[error("missing environment variable: {source}")]
-    EnvError {
-        #[from]
-        source: std::env::VarError,
-    },
 }
