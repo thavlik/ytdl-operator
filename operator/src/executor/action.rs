@@ -1,9 +1,9 @@
 use k8s_openapi::api::core::v1::{
-    Container, EnvVar, EnvVarSource, Pod, PodSpec, SecretKeySelector,
+    Container, EmptyDirVolumeSource, EnvVar, EnvVarSource, Pod, PodSpec, SecretKeySelector, Volume,
+    VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::api::{DeleteParams, ObjectMeta, Patch, PatchParams, PostParams};
-use kube::ResourceExt;
 use kube::{Api, Client, Error};
 use std::collections::BTreeMap;
 use ytdl_operator_types::{Executor, ExecutorPhase, ExecutorStatus};
@@ -34,38 +34,13 @@ pub struct FailureOptions {
     pub message: String,
 }
 
-pub async fn create_download_pod(
-    client: Client,
-    name: &str,
-    namespace: &str,
-    instance: &Executor,
-    service_account_name: String,
-    options: DownloadPodOptions,
-) -> Result<Pod, Error> {
-    let mut labels: BTreeMap<String, String> = BTreeMap::new();
-    labels.insert("app".to_owned(), name.to_owned());
-
-    // Inject the spec as an environment variable.
-    // Properly handling the error here is nontrivial
-    // because this function returns kube errors only.
-    // In any case, this should never fail, and if it
-    // does, it's a serious bug that warrants detecting.
-    let spec: String =
-        serde_json::to_string(&instance.spec).expect("failed to marshal spec to json");
-
-    // Determine the executor image.
-    let image: String = instance
-        .spec
-        .executor
-        .as_deref()
-        .unwrap_or(DEFAULT_EXECUTOR_IMAGE)
-        .to_owned();
-
-    // VPN sidecar container. I've personally tested
-    // NordVPN on k8s, but it should work with any.
-    // TODO: support more VPNs
-    // TODO: https://github.com/thavlik/vpn-operator
-    let vpn_sidecar = Container {
+/// Creates the container spec for the VPN sidecar.
+/// I've personally tested NordVPN from within a
+/// k8s pod, but it should work with any VPN.
+/// TODO: support more VPNs
+/// https://github.com/thavlik/vpn-operator
+pub fn get_vpn_sidecar() -> Container {
+    Container {
         name: "nordvpn".to_owned(),
         image: Some("thavlik/nordvpn:latest".to_owned()),
         env: Some(vec![
@@ -94,9 +69,67 @@ pub async fn create_download_pod(
                 ..EnvVar::default()
             },
         ]),
+        volume_mounts: Some(vec![VolumeMount {
+            name: "shared".to_owned(),
+            mount_path: "/shared".to_owned(),
+            ..VolumeMount::default()
+        }]),
         ..Container::default()
-    };
+    }
+}
 
+/// Create the download pod for the given Executor.
+/// The pod will have a VPN sidecar container, will
+/// access the upload credentials from the cluster,
+/// and will download the video and thumbnail to the
+/// storage backend.
+pub async fn create_pod(
+    client: Client,
+    name: &str,
+    namespace: &str,
+    instance: &Executor,
+    service_account_name: String,
+    options: DownloadPodOptions,
+) -> Result<Pod, Error> {
+    // Inject the spec as an environment variable.
+    // Properly handling the error here is nontrivial
+    // because this function returns kube errors only.
+    // In any case, this should never fail, and if it
+    // does, it's a serious bug that warrants detecting.
+    let spec: String =
+        serde_json::to_string(&instance.spec).expect("failed to marshal spec to json");
+
+    // Determine the executor image.
+    let image: String = instance
+        .spec
+        .executor
+        .as_deref()
+        .unwrap_or(DEFAULT_EXECUTOR_IMAGE)
+        .to_owned();
+
+    // Run command varies based on what needs downloaded.
+    let mut command = vec!["ytdl-executor".to_owned()];
+    if options.download_video {
+        command.push("--download-video".to_owned());
+    }
+    if options.download_thumbnail {
+        command.push("--download-thumbnail".to_owned());
+    }
+
+    // Each executor will have a VPN sidecar to avoid
+    // drawing attention from the video service.
+    let vpn_sidecar = get_vpn_sidecar();
+
+    let mut labels: BTreeMap<String, String> = BTreeMap::new();
+    labels.insert("app".to_owned(), "ytdl".to_owned());
+
+    // The containers have a shared volume mounted at /share
+    // that the VPN pod will write a file to when it's ready.
+    // This way the executor pod can wait for the VPN to be
+    // fully connected before starting any downloads.
+    // Kubernetes does not provide robust enough means of
+    // ensuring the VPN is connected before starting other
+    // containers, so this is the best we can do.
     let pod: Pod = Pod {
         metadata: ObjectMeta {
             name: Some(name.to_owned()),
@@ -107,9 +140,14 @@ pub async fn create_download_pod(
         spec: Some(PodSpec {
             service_account_name: Some(service_account_name),
             containers: vec![
+                // Kubelet will start the VPN sidecar first.
+                vpn_sidecar,
+                // Starting the executor container last may
+                // reduce VPN connection wait time.
                 Container {
                     name: "executor".to_owned(),
                     image: Some(image),
+                    command: Some(command),
                     env: Some(vec![
                         EnvVar {
                             name: "SPEC".to_owned(),
@@ -122,10 +160,21 @@ pub async fn create_download_pod(
                             ..EnvVar::default()
                         },
                     ]),
+                    volume_mounts: Some(vec![VolumeMount {
+                        name: "shared".to_owned(),
+                        mount_path: "/shared".to_owned(),
+                        ..VolumeMount::default()
+                    }]),
                     ..Container::default()
                 },
-                vpn_sidecar,
             ],
+            volumes: Some(vec![Volume {
+                name: "shared".to_owned(),
+                empty_dir: Some(EmptyDirVolumeSource {
+                    ..EmptyDirVolumeSource::default()
+                }),
+                ..Volume::default()
+            }]),
             ..PodSpec::default()
         }),
         ..Pod::default()
@@ -135,7 +184,7 @@ pub async fn create_download_pod(
     pod_api.create(&PostParams::default(), &pod).await
 }
 
-pub async fn delete_download_pod(client: Client, name: &str, namespace: &str) -> Result<(), Error> {
+pub async fn delete_pod(client: Client, name: &str, namespace: &str) -> Result<(), Error> {
     let api: Api<Pod> = Api::namespaced(client, namespace);
     api.delete(name, &DeleteParams::default()).await?;
     Ok(())
@@ -166,7 +215,7 @@ pub async fn progress(
     patch_status(client, name, namespace, instance, |status| {
         status.message = Some("download tasks are in progress".to_owned());
         status.phase = Some(ExecutorPhase::Downloading.to_str().to_owned());
-        status.start_time = Some("TODO: format time".to_owned());
+        status.start_time = Some(start_time.0.to_rfc3339());
     })
     .await
 }
@@ -236,7 +285,8 @@ async fn patch_status(
             }
         };
         f(status);
-        status.last_updated = Some("TODO: now".to_owned()); // TODO: figure out timestamps
+        let now = chrono::Utc::now().to_rfc3339();
+        status.last_updated = Some(now);
         instance
     });
     let api: Api<Executor> = Api::namespaced(client, namespace);

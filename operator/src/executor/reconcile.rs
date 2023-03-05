@@ -8,17 +8,16 @@ use kube::{
 };
 use s3::bucket::Bucket;
 use s3::creds::Credentials;
-use std::str::FromStr;
 use std::sync::Arc;
 use tokio::time::Duration;
 
-use crate::executor::{self, DownloadPodOptions, FailureOptions, ProgressOptions};
+use super::action::{self, DownloadPodOptions, FailureOptions, ProgressOptions};
 use ytdl_operator_types::{Executor, ExecutorPhase, S3OutputSpec};
 
 const DEFAULT_REGION: &str = "us-east-1";
 const DEFAULT_TEMPLATE: &str = "%(id)s.%(ext)s";
 
-pub async fn reconcile_executor_main() {
+pub async fn main() {
     // First, a Kubernetes client must be obtained using the `kube` crate
     // The client will later be moved to the custom controller
     let kubernetes_client: Client = Client::try_default()
@@ -149,7 +148,7 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
     match action {
         ExecutorAction::Pending => {
             // Update the status of the resource to reflect that reconciliation is in progress.
-            executor::pending(client, &name, &namespace, instance.as_ref()).await?;
+            action::pending(client, &name, &namespace, instance.as_ref()).await?;
 
             // Requeue the resource to be immediately reconciled again.
             Ok(Action::requeue(Duration::ZERO))
@@ -157,10 +156,10 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
         ExecutorAction::Create(options) => {
             // Apply the finalizer first. This way the Executor resource
             // won't be deleted before the download pod is deleted.
-            executor::finalizer::add(client.clone(), &name, &namespace).await?;
+            action::finalizer::add(client.clone(), &name, &namespace).await?;
 
             // Create the download pod.
-            executor::create_download_pod(
+            action::create_pod(
                 client.clone(),
                 &name,
                 &namespace,
@@ -171,7 +170,7 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
             .await?;
 
             // Update the phase to reflect that the download has started.
-            executor::starting(client, &name, &namespace, instance.as_ref()).await?;
+            action::starting(client, &name, &namespace, instance.as_ref()).await?;
 
             // Download pod will take at least a couple seconds to start.
             Ok(Action::requeue(Duration::from_secs(3)))
@@ -179,11 +178,11 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
         ExecutorAction::Delete => {
             // Deletes any subresources related to this `Executor` resources. If and only if all subresources
             // are deleted, the finalizer is removed and Kubernetes is free to remove the `Executor` resource.
-            executor::delete_download_pod(client.clone(), &name, &namespace).await?;
+            action::delete_pod(client.clone(), &name, &namespace).await?;
 
             // Once the deployment is successfully removed, remove the finalizer to make it possible
             // for Kubernetes to delete the `Executor` resource (if needed)
-            executor::finalizer::delete(client, &name, &namespace).await?;
+            action::finalizer::delete(client, &name, &namespace).await?;
 
             if instance.meta().deletion_timestamp.is_some() {
                 // No need to requeue deleted objects.
@@ -201,7 +200,7 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
             match options.start_time {
                 // Post progress event with start time.
                 Some(start_time) => {
-                    executor::progress(
+                    action::progress(
                         client.clone(),
                         &name,
                         &namespace,
@@ -212,7 +211,7 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
                 }
                 // Indicate that the downloads are starting.
                 None => {
-                    executor::starting(client.clone(), &name, &namespace, instance.as_ref()).await?
+                    action::starting(client.clone(), &name, &namespace, instance.as_ref()).await?
                 }
             }
 
@@ -223,20 +222,20 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
         }
         ExecutorAction::Succeeded => {
             // Update the status of the resource to reflect download completion.
-            executor::success(client.clone(), &name, &namespace, instance.as_ref()).await?;
+            action::success(client.clone(), &name, &namespace, instance.as_ref()).await?;
 
             // Delete the download pod before the finalizer is removed.
-            executor::delete_download_pod(client.clone(), &name, &namespace).await?;
+            action::delete_pod(client.clone(), &name, &namespace).await?;
 
             // Remove the finalizer now that the download pod is gone.
-            executor::finalizer::delete(client, &name, &namespace).await?;
+            action::finalizer::delete(client, &name, &namespace).await?;
 
             // Requeue immediately.
             Ok(Action::requeue(Duration::ZERO))
         }
         ExecutorAction::Failure(options) => {
             // Update the status of the resource to communicate the error.
-            executor::failure(
+            action::failure(
                 client.clone(),
                 &name,
                 &namespace,
@@ -246,7 +245,7 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
             .await?;
 
             // Delete the download pod so it can be recreated.
-            executor::delete_download_pod(client, &name, &namespace).await?;
+            action::delete_pod(client, &name, &namespace).await?;
 
             // Requeue immediately.
             Ok(Action::requeue(Duration::ZERO))
@@ -285,10 +284,24 @@ fn template_key(metadata: &serde_json::Value, template: &str) -> Result<String, 
     // Iterate over the key-value pairs and replace the template variables.
     let mut result = template.to_owned();
     for (key, value) in metadata {
+        if result.find("%").is_none() {
+            // No more template variables to replace; stop early.
+            break;
+        }
+        // Format the key as it would appear in the template.
+        let key = format!("%({})s", key);
         // Default to an empty string if the value is not a string.
         let value = value.as_str().unwrap_or("");
         // Replace the template variable with the value.
-        result = result.replace(&format!("%({})s", key), value);
+        result = result.replace(&key, value);
+    }
+    if result.find("%").is_some() {
+        // There are still template variables that were not replaced.
+        // This is guaranteed to result in an invalid S3 object key.
+        // https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-keys.html
+        return Err(Error::UserInputError(
+            "metadata does not contain all template variables".to_owned(),
+        ));
     }
     Ok(result)
 }
@@ -488,10 +501,7 @@ async fn determine_download_success_action(
 
 /// Determines the action to take given that the download pod
 /// exists and we need to check its status.
-async fn determine_download_pod_action(
-    client: Client,
-    pod: Pod,
-) -> Result<Option<ExecutorAction>, Error> {
+async fn determine_download_pod_action(pod: Pod) -> Result<Option<ExecutorAction>, Error> {
     // Check the status of the download pod.
     let status: &PodStatus = pod
         .status
@@ -559,7 +569,7 @@ async fn determine_download_action(
         // Download pod exists, no reason to check storage
         // as the results of `check_downloads` are cached
         // in the pod's spec.
-        Some(pod) => determine_download_pod_action(client, pod).await,
+        Some(pod) => determine_download_pod_action(pod).await,
         // Download pod does not exist, check storage to see
         // which files, if any, require downloading.
         None => {
