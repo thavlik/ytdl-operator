@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tokio::time::Duration;
 
 use crate::executor::{self, DownloadPodOptions, FailureOptions, ProgressOptions};
-use ytdl_operator_types::{S3OutputSpec, Video, VideoPhase};
+use ytdl_operator_types::{Executor, ExecutorPhase, S3OutputSpec};
 
 const DEFAULT_REGION: &str = "us-east-1";
 const DEFAULT_TEMPLATE: &str = "%(id)s.%(ext)s";
@@ -31,7 +31,7 @@ pub async fn reconcile_executor_main() {
         .expect("Expected a valid executor service account name.");
 
     // Preparation of resources used by the `kube_runtime::Controller`
-    let crd_api: Api<Video> = Api::all(kubernetes_client.clone());
+    let crd_api: Api<Executor> = Api::all(kubernetes_client.clone());
     let context: Arc<ContextData> = Arc::new(ContextData::new(
         kubernetes_client.clone(),
         service_account_name,
@@ -39,9 +39,9 @@ pub async fn reconcile_executor_main() {
 
     // The controller comes from the `kube_runtime` crate and manages the reconciliation process.
     // It requires the following information:
-    // - `kube::Api<T>` this controller "owns". In this case, `T = Video`, as this controller owns the `Video` resource,
-    // - `kube::api::ListParams` to select the `Video` resources with. Can be used for Video filtering `Video` resources before reconciliation,
-    // - `reconcile` function with reconciliation logic to be called each time a resource of `Video` kind is created/updated/deleted,
+    // - `kube::Api<T>` this controller "owns". In this case, `T = Executor`, as this controller owns the `Executor` resource,
+    // - `kube::api::ListParams` to select the `Executor` resources with. Can be used for Executor filtering `Executor` resources before reconciliation,
+    // - `reconcile` function with reconciliation logic to be called each time a resource of `Executor` kind is created/updated/deleted,
     // - `on_error` function to call whenever reconciliation fails.
     Controller::new(crd_api.clone(), ListParams::default())
         .run(reconcile, on_error, context)
@@ -82,21 +82,21 @@ impl ContextData {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-enum VideoAction {
+enum ExecutorAction {
     // The resource first appeared to the controller and requires
     // its phase to be set to "Pending" to indicate that reconciliation
     // is in progress.
     Pending,
 
     // Create the pod to download the video and/or thumbnail. Subsequent
-    // reconciliations will update the Video's status to reflect the
+    // reconciliations will update the Executor's status to reflect the
     // progress of the download.
-    CreateDownloadPod(DownloadPodOptions),
+    Create(DownloadPodOptions),
 
-    // Delete the download pod. This is done when the Video resource is
+    // Delete the download pod. This is done when the Executor resource is
     // deleted and when the download pod needs to be deleted to proceed
     // with reconciliation.
-    DeleteDownloadPod,
+    Delete,
 
     // The download pod is still downloading the video and/or thumbnail.
     Progress(ProgressOptions),
@@ -111,16 +111,16 @@ enum VideoAction {
     NoOp,
 }
 
-/// Main reconciliation loop for the `Video` resource.
-async fn reconcile(video: Arc<Video>, context: Arc<ContextData>) -> Result<Action, Error> {
+/// Main reconciliation loop for the `Executor` resource.
+async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result<Action, Error> {
     // The `Client` is shared -> a clone from the reference is obtained.
     let client: Client = context.client.clone();
 
-    let namespace: String = match video.namespace() {
+    let namespace: String = match instance.namespace() {
         None => {
             // If there is no namespace to deploy to defined, reconciliation ends with an error immediately.
             return Err(Error::UserInputError(
-                "Expected Video resource to be namespaced. Can't deploy to an unknown namespace."
+                "Expected Executor resource to be namespaced. Can't deploy to an unknown namespace."
                     .to_owned(),
             ));
         }
@@ -129,13 +129,13 @@ async fn reconcile(video: Arc<Video>, context: Arc<ContextData>) -> Result<Actio
         Some(namespace) => namespace,
     };
 
-    // Name of the Video resource is used to name the subresources as well.
-    let name = video.name_any();
+    // Name of the Executor resource is used to name the subresources as well.
+    let name = instance.name_any();
 
     // Read phase of the reconciliation loop.
-    let action = determine_action(client.clone(), &video).await?;
+    let action = determine_action(client.clone(), &instance).await?;
 
-    if action != VideoAction::NoOp {
+    if action != ExecutorAction::NoOp {
         // This log line is useful for debugging purposes.
         // Separate read & write phases greatly simplifies
         // the reconciliation loop. Deciding which actions
@@ -147,45 +147,45 @@ async fn reconcile(video: Arc<Video>, context: Arc<ContextData>) -> Result<Actio
 
     // Write phase of the reconciliation loop.
     match action {
-        VideoAction::Pending => {
+        ExecutorAction::Pending => {
             // Update the status of the resource to reflect that reconciliation is in progress.
-            video::pending(client, &name, &namespace, video.as_ref()).await?;
+            executor::pending(client, &name, &namespace, instance.as_ref()).await?;
 
             // Requeue the resource to be immediately reconciled again.
             Ok(Action::requeue(Duration::ZERO))
         }
-        VideoAction::CreateDownloadPod(options) => {
-            // Apply the finalizer first. This way the Video resource
+        ExecutorAction::Create(options) => {
+            // Apply the finalizer first. This way the Executor resource
             // won't be deleted before the download pod is deleted.
-            video::finalizer::add(client.clone(), &name, &namespace).await?;
+            executor::finalizer::add(client.clone(), &name, &namespace).await?;
 
             // Create the download pod.
-            video::create_download_pod(
+            executor::create_download_pod(
                 client.clone(),
                 &name,
                 &namespace,
-                video.as_ref(),
+                instance.as_ref(),
                 context.service_account_name.clone(),
                 options,
             )
             .await?;
 
             // Update the phase to reflect that the download has started.
-            video::starting(client, &name, &namespace, video.as_ref()).await?;
+            executor::starting(client, &name, &namespace, instance.as_ref()).await?;
 
             // Download pod will take at least a couple seconds to start.
             Ok(Action::requeue(Duration::from_secs(3)))
         }
-        VideoAction::DeleteDownloadPod => {
-            // Deletes any subresources related to this `Video` resources. If and only if all subresources
-            // are deleted, the finalizer is removed and Kubernetes is free to remove the `Video` resource.
-            video::delete_download_pod(client.clone(), &name, &namespace).await?;
+        ExecutorAction::Delete => {
+            // Deletes any subresources related to this `Executor` resources. If and only if all subresources
+            // are deleted, the finalizer is removed and Kubernetes is free to remove the `Executor` resource.
+            executor::delete_download_pod(client.clone(), &name, &namespace).await?;
 
             // Once the deployment is successfully removed, remove the finalizer to make it possible
-            // for Kubernetes to delete the `Video` resource (if needed)
-            video::finalizer::delete(client, &name, &namespace).await?;
+            // for Kubernetes to delete the `Executor` resource (if needed)
+            executor::finalizer::delete(client, &name, &namespace).await?;
 
-            if video.meta().deletion_timestamp.is_some() {
+            if instance.meta().deletion_timestamp.is_some() {
                 // No need to requeue deleted objects.
                 return Ok(Action::await_change());
             }
@@ -194,24 +194,26 @@ async fn reconcile(video: Arc<Video>, context: Arc<ContextData>) -> Result<Actio
             // Requeue the resource to be immediately reconciled again.
             Ok(Action::requeue(Duration::ZERO))
         }
-        VideoAction::Progress(options) => {
+        ExecutorAction::Progress(options) => {
             // Update the status of the resource to reflect that the
             // download is in progress. In the case that no start time
-            // is provided, set the Video phase to "Starting".
+            // is provided, set the Executor phase to "Starting".
             match options.start_time {
                 // Post progress event with start time.
                 Some(start_time) => {
-                    video::progress(
+                    executor::progress(
                         client.clone(),
                         &name,
                         &namespace,
-                        video.as_ref(),
+                        instance.as_ref(),
                         start_time,
                     )
                     .await?
                 }
                 // Indicate that the downloads are starting.
-                None => video::starting(client.clone(), &name, &namespace, video.as_ref()).await?,
+                None => {
+                    executor::starting(client.clone(), &name, &namespace, instance.as_ref()).await?
+                }
             }
 
             // Requeue the resource to be reconciled again. Expect
@@ -219,30 +221,37 @@ async fn reconcile(video: Arc<Video>, context: Arc<ContextData>) -> Result<Actio
             // before completion occurs.
             Ok(Action::requeue(Duration::from_secs(3)))
         }
-        VideoAction::Succeeded => {
+        ExecutorAction::Succeeded => {
             // Update the status of the resource to reflect download completion.
-            video::success(client.clone(), &name, &namespace, video.as_ref()).await?;
+            executor::success(client.clone(), &name, &namespace, instance.as_ref()).await?;
 
             // Delete the download pod before the finalizer is removed.
-            video::delete_download_pod(client.clone(), &name, &namespace).await?;
+            executor::delete_download_pod(client.clone(), &name, &namespace).await?;
 
             // Remove the finalizer now that the download pod is gone.
-            video::finalizer::delete(client, &name, &namespace).await?;
+            executor::finalizer::delete(client, &name, &namespace).await?;
 
             // Requeue immediately.
             Ok(Action::requeue(Duration::ZERO))
         }
-        VideoAction::Failure(options) => {
+        ExecutorAction::Failure(options) => {
             // Update the status of the resource to communicate the error.
-            video::failure(client.clone(), &name, &namespace, video.as_ref(), options).await?;
+            executor::failure(
+                client.clone(),
+                &name,
+                &namespace,
+                instance.as_ref(),
+                options,
+            )
+            .await?;
 
             // Delete the download pod so it can be recreated.
-            video::delete_download_pod(client, &name, &namespace).await?;
+            executor::delete_download_pod(client, &name, &namespace).await?;
 
             // Requeue immediately.
             Ok(Action::requeue(Duration::ZERO))
         }
-        VideoAction::NoOp => {
+        ExecutorAction::NoOp => {
             // Nothing to do (resource is fully reconciled).
             Ok(Action::await_change())
         }
@@ -288,9 +297,9 @@ fn template_key(metadata: &serde_json::Value, template: &str) -> Result<String, 
 async fn needs_video_download(
     client: Client,
     metadata: &serde_json::Value,
-    video: &Video,
+    instance: &Executor,
 ) -> Result<bool, Error> {
-    let (bucket, template) = match get_video_output(client, video).await? {
+    let (bucket, template) = match get_video_output(client, instance).await? {
         // Resource is requesting video output.
         Some(v) => v,
         // Resource is not configured to output video.
@@ -308,9 +317,9 @@ async fn needs_video_download(
 async fn needs_thumbnail_download(
     client: Client,
     metadata: &serde_json::Value,
-    video: &Video,
+    instance: &Executor,
 ) -> Result<bool, Error> {
-    let (bucket, template) = match get_thumbnail_output(client, video).await? {
+    let (bucket, template) = match get_thumbnail_output(client, instance).await? {
         // Resource is requesting thumbnail output.
         Some(v) => v,
         // Resource is not requesting thumbnail output.
@@ -323,9 +332,9 @@ async fn needs_thumbnail_download(
 }
 
 /// Returns the download pod if it exists, or None if it does not.
-async fn get_download_pod(client: Client, video: &Video) -> Result<Option<Pod>, kube::Error> {
-    let pod_api: Api<Pod> = Api::namespaced(client, &video.namespace().unwrap());
-    let pod_name = video.name_any();
+async fn get_download_pod(client: Client, instance: &Executor) -> Result<Option<Pod>, kube::Error> {
+    let pod_api: Api<Pod> = Api::namespaced(client, &instance.namespace().unwrap());
+    let pod_name = instance.name_any();
     match pod_api.get(&pod_name).await {
         Ok(pod) => Ok(Some(pod)),
         Err(e) => match &e {
@@ -343,11 +352,11 @@ async fn get_download_pod(client: Client, video: &Video) -> Result<Option<Pod>, 
 /// Returns a tuple of booleans indicating whether the video
 /// and/or the thumbnail should be downloaded. Both checks
 /// are made concurrently for maximum performance.
-async fn check_downloads(client: Client, video: &Video) -> Result<(bool, bool), Error> {
-    let metadata: serde_json::Value = video.spec.metadata.parse()?;
+async fn check_downloads(client: Client, instance: &Executor) -> Result<(bool, bool), Error> {
+    let metadata: serde_json::Value = instance.spec.metadata.parse()?;
     let result = tokio::join!(
-        needs_video_download(client.clone(), &metadata, video),
-        needs_thumbnail_download(client, &metadata, video),
+        needs_video_download(client.clone(), &metadata, instance),
+        needs_thumbnail_download(client, &metadata, instance),
     );
     let download_video = result.0?;
     let download_thumbnail = result.1?;
@@ -423,11 +432,11 @@ async fn output_from_spec(
 /// Returns the Bucket to be used for video file storage.
 async fn get_video_output(
     client: Client,
-    video: &Video,
+    instance: &Executor,
 ) -> Result<Option<(Bucket, String)>, Error> {
-    match video.spec.output.video.as_ref().unwrap().s3.as_ref() {
+    match instance.spec.output.video.as_ref().unwrap().s3.as_ref() {
         Some(spec) => Ok(Some(
-            output_from_spec(client, video.namespace().as_ref().unwrap(), spec).await?,
+            output_from_spec(client, instance.namespace().as_ref().unwrap(), spec).await?,
         )),
         None => Ok(None),
     }
@@ -436,42 +445,42 @@ async fn get_video_output(
 /// Returns the Bucket to be used for thumbnail storage.
 async fn get_thumbnail_output(
     client: Client,
-    video: &Video,
+    instance: &Executor,
 ) -> Result<Option<(Bucket, String)>, Error> {
-    match video.spec.output.thumbnail.as_ref().unwrap().s3.as_ref() {
+    match instance.spec.output.thumbnail.as_ref().unwrap().s3.as_ref() {
         Some(spec) => Ok(Some(
-            output_from_spec(client, video.namespace().as_ref().unwrap(), spec).await?,
+            output_from_spec(client, instance.namespace().as_ref().unwrap(), spec).await?,
         )),
         None => Ok(None),
     }
 }
 
-/// Returns the phase of the video.
-fn get_phase(video: &Video) -> Result<VideoPhase, Error> {
-    let phase: &str = video.status.as_ref().unwrap().phase.as_ref().unwrap();
-    let phase: VideoPhase =
-        VideoPhase::from_str(phase).ok_or_else(|| Error::InvalidPhase(phase.to_string()))?;
+/// Returns the phase of the Executor.
+fn get_phase(instance: &Executor) -> Result<ExecutorPhase, Error> {
+    let phase: &str = instance.status.as_ref().unwrap().phase.as_ref().unwrap();
+    let phase: ExecutorPhase =
+        ExecutorPhase::from_str(phase).ok_or_else(|| Error::InvalidPhase(phase.to_string()))?;
     Ok(phase)
 }
 
 /// Determines the action to take after all downloads have completed.
-/// The controller will first set the Video phase to Succeeded, then
+/// The controller will first set the Executor phase to Succeeded, then
 /// it will delete the download pod.
 async fn determine_download_success_action(
     client: Client,
-    video: &Video,
-) -> Result<Option<VideoAction>, Error> {
-    if get_phase(video)? != VideoPhase::Succeeded {
-        // Mark the Video resource as succeeded before
+    instance: &Executor,
+) -> Result<Option<ExecutorAction>, Error> {
+    if get_phase(instance)? != ExecutorPhase::Succeeded {
+        // Mark the Executor resource as succeeded before
         // garbage collecting the download pod.
-        return Ok(Some(VideoAction::Succeeded));
+        return Ok(Some(ExecutorAction::Succeeded));
     }
-    match get_download_pod(client, video).await? {
+    match get_download_pod(client, instance).await? {
         // Garbage collect the download pod. Given that
         // the Delete action is invoked after the pod
         // succeeds, this branch *shouldn't* be reached,
         // but for safety we handle it anyway.
-        Some(_) => Ok(Some(VideoAction::DeleteDownloadPod)),
+        Some(_) => Ok(Some(ExecutorAction::Delete)),
         // Do nothing and proceed with reconciliation.
         None => Ok(None),
     }
@@ -482,7 +491,7 @@ async fn determine_download_success_action(
 async fn determine_download_pod_action(
     client: Client,
     pod: Pod,
-) -> Result<Option<VideoAction>, Error> {
+) -> Result<Option<ExecutorAction>, Error> {
     // Check the status of the download pod.
     let status: &PodStatus = pod
         .status
@@ -504,49 +513,49 @@ async fn determine_download_pod_action(
                             "download pod is not scheduled: {}",
                             condition.message.as_ref().unwrap()
                         );
-                        return Ok(Some(VideoAction::Failure(FailureOptions { message })));
+                        return Ok(Some(ExecutorAction::Failure(FailureOptions { message })));
                     }
                 }
             }
             // Download pod is Pending without error.
-            // Mark the Video phase as being in-progress.
-            Ok(Some(VideoAction::Progress(ProgressOptions {
+            // Mark the Executor phase as being in-progress.
+            Ok(Some(ExecutorAction::Progress(ProgressOptions {
                 start_time: None,
             })))
         }
         "Running" => {
             // Download is in progress.
             // TODO: report verbose download statistics.
-            Ok(Some(VideoAction::Progress(ProgressOptions {
+            Ok(Some(ExecutorAction::Progress(ProgressOptions {
                 start_time: pod.creation_timestamp(),
             })))
         }
         "Succeeded" => {
             // Download is completed.
-            Ok(Some(VideoAction::Succeeded))
+            Ok(Some(ExecutorAction::Succeeded))
         }
         _ => {
             // Report error, delete pod, and re-create.
             // TODO: find way to extract a verbose error message from the pod.
             let message = format!("pod is in phase {}", phase);
-            Ok(Some(VideoAction::Failure(FailureOptions { message })))
+            Ok(Some(ExecutorAction::Failure(FailureOptions { message })))
         }
     }
 }
 
-/// Determines the action to take for a Video resource concerning
+/// Determines the action to take for a Executor resource concerning
 /// the files that need to be downloaded. If no files need to be
 /// downloaded, the returned action is None, signifying that
 /// reconciliation should proceed to the next phase.
 async fn determine_download_action(
     client: Client,
-    video: &Video,
-) -> Result<Option<VideoAction>, Error> {
+    instance: &Executor,
+) -> Result<Option<ExecutorAction>, Error> {
     // We don't want to HEAD the bucket on every loop, so this
     // is optimized by checking the status of the download pod
     // first, as its existence implies that there were files
     // that previously needed downloading.
-    match get_download_pod(client.clone(), video).await? {
+    match get_download_pod(client.clone(), instance).await? {
         // Download pod exists, no reason to check storage
         // as the results of `check_downloads` are cached
         // in the pod's spec.
@@ -556,15 +565,15 @@ async fn determine_download_action(
         None => {
             // Determine which parts are already downloaded.
             let (download_video, download_thumbnail) =
-                check_downloads(client.clone(), video).await?;
+                check_downloads(client.clone(), instance).await?;
             if !download_video && !download_thumbnail {
                 // All downloads have completed successfully. Note that
                 // This is the only branch that has the ability to return
                 // None, signaling reconciliation is complete.
-                return determine_download_success_action(client, video).await;
+                return determine_download_success_action(client, instance).await;
             }
             // Create the download pod, downloading only the requested parts.
-            Ok(Some(VideoAction::CreateDownloadPod(DownloadPodOptions {
+            Ok(Some(ExecutorAction::Create(DownloadPodOptions {
                 download_video,
                 download_thumbnail,
             })))
@@ -575,40 +584,40 @@ async fn determine_download_action(
 /// needs_pending returns true if the video resource
 /// requires a status update to set the phase to Pending.
 /// This should be the first action for any managed resource.
-fn needs_pending(video: &Video) -> bool {
-    video.status.is_none() || video.status.as_ref().unwrap().phase.is_none()
+fn needs_pending(instance: &Executor) -> bool {
+    instance.status.is_none() || instance.status.as_ref().unwrap().phase.is_none()
 }
 
 /// The "read" phase of the reconciliation loop.
-async fn determine_action(client: Client, video: &Video) -> Result<VideoAction, Error> {
-    if video.meta().deletion_timestamp.is_some() {
+async fn determine_action(client: Client, instance: &Executor) -> Result<ExecutorAction, Error> {
+    if instance.meta().deletion_timestamp.is_some() {
         // We only want to garbage collect child resources.
-        return Ok(VideoAction::DeleteDownloadPod);
+        return Ok(ExecutorAction::Delete);
     };
 
     // Make sure the status object exists with a phase.
     // If not, create it and set the phase to Pending.
     // This allows us to access the status and phase
     // fields without having to check for None values.
-    if needs_pending(video) {
+    if needs_pending(instance) {
         // The resource first appeared to the control.
-        return Ok(VideoAction::Pending);
+        return Ok(ExecutorAction::Pending);
     }
 
     // Check if the video and/or thumbnail need to
     // be downloaded. Both of these operations must
     // occur behind a VPN connection, so we will do
     // both tasks in the same pod.
-    if let Some(action) = determine_download_action(client, video).await? {
+    if let Some(action) = determine_download_action(client, instance).await? {
         return Ok(action);
     };
 
     //
     // Any additional actions that occur after the
-    // video is fully downloaded will go here.
+    // Executor is completed will go here.
 
     // Everything is done and there is nothing to do.
-    Ok(VideoAction::NoOp)
+    Ok(ExecutorAction::NoOp)
 }
 
 /// Actions to be taken when a reconciliation fails - for whatever reason.
@@ -616,11 +625,11 @@ async fn determine_action(client: Client, video: &Video) -> Result<VideoAction, 
 /// five seconds.
 ///
 /// # Arguments
-/// - `video`: The erroneous resource.
+/// - `instance`: The erroneous resource.
 /// - `error`: A reference to the `kube::Error` that occurred during reconciliation.
 /// - `_context`: Unused argument. Context Data "injected" automatically by kube-rs.
-fn on_error(video: Arc<Video>, error: &Error, _context: Arc<ContextData>) -> Action {
-    eprintln!("Reconciliation error:\n{:?}.\n{:?}", error, video);
+fn on_error(instance: Arc<Executor>, error: &Error, _context: Arc<ContextData>) -> Action {
+    eprintln!("Reconciliation error:\n{:?}.\n{:?}", error, instance);
     Action::requeue(Duration::from_secs(5))
 }
 
@@ -648,12 +657,12 @@ pub enum Error {
         source: awscreds::error::CredentialsError,
     },
 
-    /// Error in user input or Video resource definition, typically missing fields.
-    #[error("Invalid Video CRD: {0}")]
+    /// Error in user input or Executor resource definition, typically missing fields.
+    #[error("Invalid Executor CRD: {0}")]
     UserInputError(String),
 
-    /// Video status.phase value does not match any known phase.
-    #[error("Invalid Video status.phase: {0}")]
+    /// Executor status.phase value does not match any known phase.
+    #[error("Invalid Executor status.phase: {0}")]
     InvalidPhase(String),
 
     /// Generic error based on a string description
