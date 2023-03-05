@@ -38,11 +38,13 @@ async fn main() {
         }
         (true, false) => {
             println!("downloading video");
-            download_video(&namespace, &spec).await.expect("failed to download video");
+            download_video(&namespace, &spec).await
+                .expect("failed to download video");
         }
         (false, true) => {
             println!("downloading thumbnail");
-            download_thumbnail(&namespace, &spec).await.expect("failed to download thumbnail");
+            download_thumbnail(&namespace, &spec).await
+                .expect("failed to download thumbnail");
         }
         (false, false) => {
             panic!("no download options specified");
