@@ -12,13 +12,13 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tokio::time::Duration;
 
-use crate::video::{self, DownloadPodOptions, FailureOptions, ProgressOptions};
+use crate::executor::{self, DownloadPodOptions, FailureOptions, ProgressOptions};
 use ytdl_operator_types::{S3OutputSpec, Video, VideoPhase};
 
 const DEFAULT_REGION: &str = "us-east-1";
 const DEFAULT_TEMPLATE: &str = "%(id)s.%(ext)s";
 
-pub async fn reconcile_video_main() {
+pub async fn reconcile_executor_main() {
     // First, a Kubernetes client must be obtained using the `kube` crate
     // The client will later be moved to the custom controller
     let kubernetes_client: Client = Client::try_default()

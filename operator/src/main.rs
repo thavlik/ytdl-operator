@@ -1,9 +1,9 @@
-mod reconcile_video;
+mod reconcile_executor;
 mod video;
 
-use reconcile_video::reconcile_video_main;
+use reconcile_executor::reconcile_executor_main;
 
 #[tokio::main]
 async fn main() {
-    reconcile_video_main().await
+    reconcile_executor_main().await
 }
