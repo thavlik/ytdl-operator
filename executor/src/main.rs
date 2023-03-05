@@ -229,7 +229,7 @@ async fn download_thumbnail(
     //
     // TODO: verify mimetype?
     //
-    // Convert the response body to a tokio AsyncRead.
+    // Convert the response body to a tokio::ioAsyncRead.
     let mut body = to_tokio_async_read(
         // Use reqwest's stream reader extension.
         res.bytes_stream()
