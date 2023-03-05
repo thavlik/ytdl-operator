@@ -216,7 +216,7 @@ async fn download_thumbnail(
     let thumbnail_url = get_thumbnail_url(metadata)?;
     println!(
         "downloading thumbnail {} -> s3://{}/{}",
-        thumbnail_url, &bucket.name, &key
+        &thumbnail_url, &bucket.name, &key
     );
     let res = reqwest::get(thumbnail_url).await?;
     // Check the response status code before starting the upload.
