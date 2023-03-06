@@ -9,7 +9,7 @@ RUN apt-get update \
         pkg-config \
         wget \
     && rm -rf /var/lib/apt/lists/*
-WORKDIR /ytdl-executor
+WORKDIR /ytdl-operator
 COPY common common
 COPY types types
 COPY Cargo.lock .
@@ -18,8 +18,7 @@ COPY executor/Cargo.toml .
 RUN mkdir src \
     && echo 'fn main() { panic!("Dummy image called!"); }' > src/main.rs \
     && cargo build \
-    && rm -rf src \
-    && rm target/debug/ytdl-executor*
+    && rm -rf src
 COPY executor/src src
 RUN touch -a -m ./src/main.rs \
     && cargo build

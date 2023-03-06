@@ -18,8 +18,7 @@ COPY operator/Cargo.toml .
 RUN mkdir src \
     && echo 'fn main() { panic!("Dummy image called!"); }' > src/main.rs \
     && cargo build \
-    && rm -rf src \
-    && rm target/debug/ytdl-operator*
+    && rm -rf src
 COPY operator/src src
 RUN touch -a -m ./src/main.rs \
     && cargo build
