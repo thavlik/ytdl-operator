@@ -13,7 +13,7 @@ WORKDIR /ytdl-executor
 COPY common common
 COPY types types
 COPY Cargo.lock .
-WORKDIR /ytdl-executor/executor
+WORKDIR /ytdl-operator/executor
 COPY executor/Cargo.toml .
 RUN mkdir src \
     && echo 'fn main() { panic!("Dummy image called!"); }' > src/main.rs \
@@ -25,6 +25,6 @@ RUN touch -a -m ./src/main.rs \
     && cargo build
 FROM debian:bullseye-slim
 WORKDIR /
-COPY --from=builder /ytdl-executor/executor/target/debug/ytdl-executor .
+COPY --from=builder /ytdl-operator/executor/target/debug/ytdl-executor .
 ENV RUST_BACKTRACE=1
 CMD ["/ytdl-executor"]
