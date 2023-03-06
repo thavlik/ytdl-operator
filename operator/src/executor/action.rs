@@ -1,16 +1,27 @@
 use k8s_openapi::api::core::v1::{
-    Container, EmptyDirVolumeSource, EnvVar, EnvVarSource, Pod, PodSpec, SecretKeySelector, Volume,
-    VolumeMount, SecurityContext, Capabilities,
+    Capabilities, Container, EmptyDirVolumeSource, EnvVar, EnvVarSource, Pod, PodSpec,
+    SecretKeySelector, SecurityContext, Volume, VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::api::{DeleteParams, ObjectMeta, Patch, PatchParams, PostParams};
 use kube::{Api, Client};
 use std::collections::BTreeMap;
-use ytdl_common::{Error, IP_SERVICE};
+use ytdl_common::{Error, IP_FILE_PATH, IP_SERVICE};
 use ytdl_types::{Executor, ExecutorPhase, ExecutorStatus};
 
+/// Friendly name for the controller.
 const MANAGER_NAME: &str = "ytdl-operator";
+
+/// Default image to use for the executor. The executor
+/// image is responsible for downloading the video and
+/// thumbnail from the video service, and uploading them
+/// to the storage backend in the desired formats.
 const DEFAULT_EXECUTOR_IMAGE: &str = "thavlik/ytdl-executor:latest";
+
+/// VPN sidecar image. Efforts were made to use a stock
+/// image with no modifications, as to maximize the
+/// plug-and-play nature of the image.
+const DEFAULT_VPN_IMAGE: &str = "qmcgaw/gluetun:v3.32.0";
 
 /// A central tenet of this project is to only access
 /// the external video service from within pods that
@@ -18,10 +29,10 @@ const DEFAULT_EXECUTOR_IMAGE: &str = "thavlik/ytdl-executor:latest";
 /// thumbnail have to be downloaded by the proxy pod.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct DownloadPodOptions {
-    // if true, download the video to the storage backend
+    // If true, download the video to the storage backend.
     pub download_video: bool,
 
-    // if true, download the thumbnail to the storage backend
+    // If true, download the thumbnail to the storage backend.
     pub download_thumbnail: bool,
 }
 
@@ -36,14 +47,10 @@ pub struct FailureOptions {
 }
 
 /// Creates the container spec for the VPN sidecar.
-/// I've personally tested NordVPN from within a
-/// k8s pod, but it should work with any VPN.
-/// TODO: support more VPNs
-/// https://github.com/thavlik/vpn-operator
 pub fn get_vpn_sidecar() -> Container {
     Container {
         name: "vpn".to_owned(),
-        image: Some("thavlik/ytdl-vpn:latest".to_owned()),
+        image: Some(DEFAULT_VPN_IMAGE.to_owned()),
         security_context: Some(SecurityContext {
             capabilities: Some(Capabilities {
                 add: Some(vec!["NET_ADMIN".to_owned()]),
@@ -89,6 +96,26 @@ pub fn get_vpn_sidecar() -> Container {
                 ..EnvVar::default()
             },
         ]),
+        ..Container::default()
+    }
+}
+
+/// Creates the container spec for the init container that
+/// retrieves the unmasked public IP address and writes it
+/// to the shared volume. This is done on startup so that
+/// the executor will truly know when it's okay to start
+/// downloading the video and/or thumbnail.
+fn get_init_container() -> Container {
+    Container {
+        name: "init".to_owned(),
+        image: Some("curlimages/curl:7.88.1".to_owned()),
+        image_pull_policy: Some("IfNotPresent".to_owned()),
+        command: Some(
+            vec!["curl", "-o", IP_FILE_PATH, "-s", IP_SERVICE]
+                .into_iter()
+                .map(|s| s.to_owned())
+                .collect(),
+        ),
         volume_mounts: Some(vec![VolumeMount {
             name: "shared".to_owned(),
             mount_path: "/shared".to_owned(),
@@ -112,8 +139,7 @@ pub async fn create_pod(
     options: DownloadPodOptions,
 ) -> Result<Pod, Error> {
     // Inject the spec as an environment variable.
-    let resource: String =
-        serde_json::to_string(instance)?;
+    let resource: String = serde_json::to_string(instance)?;
 
     // Determine the executor image.
     let image: String = instance
@@ -154,12 +180,18 @@ pub async fn create_pod(
             ..ObjectMeta::default()
         },
         spec: Some(PodSpec {
+            restart_policy: Some("Never".to_owned()),
             service_account_name: Some(service_account_name),
+            // Create an init container that writes the unmasked public
+            // IP to a shared file. This container must complete before
+            // the others can start, and this is useful when the executor
+            // is trying to figure out the moment the VPN is connected.
+            init_containers: Some(vec![get_init_container()]),
             containers: vec![
                 // Kubelet will start the VPN sidecar first.
                 vpn_sidecar,
-                // Starting the executor container last may
-                // reduce VPN connection wait time.
+                // Starting the executor container last may reduce VPN
+                // connection wait time.
                 Container {
                     name: "executor".to_owned(),
                     image: Some(image),

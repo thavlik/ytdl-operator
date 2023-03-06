@@ -19,6 +19,11 @@ pub const DEFAULT_TEMPLATE: &str = "%(id)s.%(ext)s";
 /// The IP service to use for getting the public IP address.
 pub const IP_SERVICE: &str = "https://api.ipify.org";
 
+/// The file containing the unmasked IP address of the pod.
+/// This is written by an init container so the executor
+/// knows when the VPN is connected.
+pub const IP_FILE_PATH: &str = "/shared/ip";
+
 /// Returns the Bucket to be used for video file storage.
 pub async fn get_video_output(
     client: Client,

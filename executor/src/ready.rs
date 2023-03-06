@@ -1,11 +1,10 @@
 use std::time::{Duration, SystemTime};
 use tokio::{fs, time};
-use ytdl_common::IP_SERVICE;
+use ytdl_common::{IP_SERVICE, IP_FILE_PATH};
 
 use crate::Error;
 
-const IP_FILE_PATH: &str = "/shared/ip";
-const TIMEOUT: Duration = Duration::from_secs(10);
+const TIMEOUT: Duration = Duration::from_secs(12);
 
 /// Waits for the VPN container to write the initial
 /// public IP to a file then probes an external service
@@ -60,7 +59,7 @@ async fn wait_for_ip_change(current: &str) -> Result<String, Error> {
                 "timed out waiting for public ip to change".to_owned(),
             ));
         }
-        time::sleep(Duration::from_secs(1)).await;
+        time::sleep(Duration::from_secs(2)).await;
     }
 }
 
