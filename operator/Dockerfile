@@ -16,12 +16,13 @@ COPY Cargo.lock .
 WORKDIR /ytdl-operator/operator
 COPY operator/Cargo.toml .
 RUN mkdir src \
-    && echo "fn main() {}" > src/main.rs \
+    && echo 'fn main() { panic!("Dummy image called!"); }' > src/main.rs \
     && cargo build \
     && rm -rf src \
     && rm target/debug/ytdl-operator*
 COPY operator/src src
-RUN cargo build
+RUN touch -a -m ./src/main.rs \
+    && cargo build
 FROM debian:bullseye-slim
 WORKDIR /
 COPY --from=builder /ytdl-operator/operator/target/debug/ytdl-operator .

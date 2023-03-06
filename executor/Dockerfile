@@ -9,21 +9,22 @@ RUN apt-get update \
         pkg-config \
         wget \
     && rm -rf /var/lib/apt/lists/*
-WORKDIR /ytdl-operator
+WORKDIR /ytdl-executor
 COPY common common
 COPY types types
 COPY Cargo.lock .
-WORKDIR /ytdl-operator/executor
+WORKDIR /ytdl-executor/executor
 COPY executor/Cargo.toml .
 RUN mkdir src \
-    && echo "fn main() {}" > src/main.rs \
+    && echo 'fn main() { panic!("Dummy image called!"); }' > src/main.rs \
     && cargo build \
     && rm -rf src \
     && rm target/debug/ytdl-executor*
 COPY executor/src src
-RUN cargo build
+RUN touch -a -m ./src/main.rs \
+    && cargo build
 FROM debian:bullseye-slim
 WORKDIR /
-COPY --from=builder /ytdl-operator/executor/target/debug/ytdl-executor .
+COPY --from=builder /ytdl-executor/executor/target/debug/ytdl-executor .
 ENV RUST_BACKTRACE=1
 CMD ["/ytdl-executor"]
