@@ -6,7 +6,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::api::{DeleteParams, ObjectMeta, Patch, PatchParams, PostParams};
 use kube::{Api, Client};
 use std::collections::BTreeMap;
-use ytdl_common::Error;
+use ytdl_common::{Error, IP_SERVICE};
 use ytdl_types::{Executor, ExecutorPhase, ExecutorStatus};
 
 const MANAGER_NAME: &str = "ytdl-operator";
@@ -57,6 +57,11 @@ pub fn get_vpn_sidecar() -> Container {
             EnvVar {
                 name: "VPN_SERVICE_PROVIDER".to_owned(),
                 value: Some("private internet access".to_owned()),
+                ..EnvVar::default()
+            },
+            EnvVar {
+                name: "IP_SERVICE".to_owned(),
+                value: Some(IP_SERVICE.to_owned()),
                 ..EnvVar::default()
             },
             EnvVar {

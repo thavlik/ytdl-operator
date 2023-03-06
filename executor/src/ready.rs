@@ -1,5 +1,6 @@
 use std::time::{Duration, SystemTime};
 use tokio::{fs, time};
+use ytdl_common::IP_SERVICE;
 
 use crate::Error;
 
@@ -68,5 +69,5 @@ async fn wait_for_ip_change(current: &str) -> Result<String, Error> {
 /// should be the same service used by the VPN container
 /// to write the contents of initial /shared/ip file.
 async fn get_public_ip() -> Result<String, Error> {
-    Ok(reqwest::get("https://api.ipify.org").await?.text().await?)
+    Ok(reqwest::get(IP_SERVICE).await?.text().await?)
 }

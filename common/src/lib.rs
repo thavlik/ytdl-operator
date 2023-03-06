@@ -16,6 +16,9 @@ pub const DEFAULT_REGION: &str = "us-east-1";
 /// Default output key template
 pub const DEFAULT_TEMPLATE: &str = "%(id)s.%(ext)s";
 
+/// The IP service to use for getting the public IP address.
+pub const IP_SERVICE: &str = "https://api.ipify.org";
+
 /// Returns the Bucket to be used for video file storage.
 pub async fn get_video_output(
     client: Client,
