@@ -24,9 +24,7 @@ pub enum Error {
 
     /// Non-200 response from S3
     #[error("S3 upload error code {status_code}")]
-    S3UploadError {
-        status_code: u16,
-    },
+    S3UploadError { status_code: u16 },
 
     /// Error converting a string to UTF-8
     #[error("UTF-8 error: {source}")]
@@ -34,7 +32,7 @@ pub enum Error {
         #[from]
         source: std::str::Utf8Error,
     },
-    
+
     /// Serde json decode error
     #[error("decode json error: {source}")]
     JSONError {
@@ -49,15 +47,18 @@ pub enum Error {
         source: std::env::VarError,
     },
 
+    /// Compatibility with std
     #[error("i/o error: {source}")]
     IOError {
         #[from]
         source: std::io::Error,
     },
 
-    #[error("VPN sidecar failure: {0}")]
-    VPNSidecarFailure(String),
+    /// Issue waiting for the VPN to connect.
+    #[error("VPN error: {0}")]
+    VPNError(String),
 
+    /// Error querying system time.
     #[error("system time error: {source}")]
     SystemTimeError {
         #[from]
@@ -65,33 +66,34 @@ pub enum Error {
     },
 
     /// Error in user input or Executor resource definition, typically missing fields.
-    #[error("Invalid Executor CRD: {0}")]
+    /// Prefer this over UnknownError whenever it makes sense.
+    #[error("Invalid user input: {0}")]
     UserInputError(String),
 
     /// Executor status.phase value does not match any known phase.
     #[error("Invalid Executor status.phase: {0}")]
     InvalidPhase(String),
 
-    /// Generic error based on a string description
-    #[error("error: {0}")]
-    GenericError(String),
+    /// Generic error based on a string description. Try to minimize use of this.
+    #[error("uncategorized error: {0}")]
+    UnknownError(String),
 
+    /// Nonzero exit code from youtube-dl.
     #[error("youtube-dl exit code {exit_code}")]
-    YoutubeDlError {
-        exit_code: i32,
-    },
+    YoutubeDlError { exit_code: i32 },
 
+    /// Non-200 response when downloading thumbnail.
     #[error("thumbnail download error: {status_code}")]
-    ThumbnailDownloadError {
-        status_code: u16,
-    },
+    ThumbnailDownloadError { status_code: u16 },
 
-    #[error("reqwest error: {source}")]
+    /// Generic HTTP client error.
+    #[error("reqwest http client error: {source}")]
     ReqwestError {
         #[from]
         source: reqwest::Error,
     },
 
+    /// Image error, e.g. corrupt jpg file.
     #[error("image error: {source}")]
     ImageError {
         #[from]

@@ -51,6 +51,7 @@ pub fn get_vpn_sidecar() -> Container {
     Container {
         name: "vpn".to_owned(),
         image: Some(DEFAULT_VPN_IMAGE.to_owned()),
+        image_pull_policy: Some("IfNotPresent".to_owned()),
         security_context: Some(SecurityContext {
             capabilities: Some(Capabilities {
                 add: Some(vec!["NET_ADMIN".to_owned()]),
@@ -125,6 +126,32 @@ fn get_init_container() -> Container {
     }
 }
 
+/// Returns the image to use for the executor container.
+/// It may be overridden by the user in the spec, but
+/// defaults to the stock value in this project.
+fn get_executor_image(instance: &Executor) -> String {
+    instance
+        .spec
+        .executor
+        .as_deref()
+        .unwrap_or(DEFAULT_EXECUTOR_IMAGE)
+        .to_owned()
+}
+
+/// Returns the arguments to pass to the executor container's
+/// default command. This is used to configure the executor
+/// to download the video and/or thumbnail.
+fn get_executor_args(options: DownloadPodOptions) -> Vec<String> {
+    let mut args = vec![];
+    if options.download_video {
+        args.push("--download-video".to_owned());
+    }
+    if options.download_thumbnail {
+        args.push("--download-thumbnail".to_owned());
+    }
+    args
+}
+
 /// Create the download pod for the given Executor.
 /// The pod will have a VPN sidecar container, will
 /// access the upload credentials from the cluster,
@@ -142,26 +169,18 @@ pub async fn create_pod(
     let resource: String = serde_json::to_string(instance)?;
 
     // Determine the executor image.
-    let image: String = instance
-        .spec
-        .executor
-        .as_deref()
-        .unwrap_or(DEFAULT_EXECUTOR_IMAGE)
-        .to_owned();
+    let image = get_executor_image(instance);
 
-    // Run command varies based on what needs downloaded.
-    let mut command = vec!["ytdl-executor".to_owned()];
-    if options.download_video {
-        command.push("--download-video".to_owned());
-    }
-    if options.download_thumbnail {
-        command.push("--download-thumbnail".to_owned());
-    }
+    // Determine the executor args. The pod will use the
+    // default command for the image and pass these as the
+    // arguments.
+    let args = get_executor_args(options);
 
-    // Each executor will have a VPN sidecar to avoid
-    // drawing attention from the video service.
+    // Each executor will have a VPN sidecar to avoid drawing
+    // too much attention from the video service.
     let vpn_sidecar = get_vpn_sidecar();
 
+    // Add a label to the pod so that we can easily find it.
     let mut labels: BTreeMap<String, String> = BTreeMap::new();
     labels.insert("app".to_owned(), "ytdl".to_owned());
 
@@ -180,27 +199,44 @@ pub async fn create_pod(
             ..ObjectMeta::default()
         },
         spec: Some(PodSpec {
+            // The operator is responsible for managing the lifecycle
+            // of this pod, so it should never be restarted or retried.
             restart_policy: Some("Never".to_owned()),
+            // The pod needs access to the k8s api so it can retrieve
+            // s3 credentials from the configured Secret resources.
             service_account_name: Some(service_account_name),
             // Create an init container that writes the unmasked public
             // IP to a shared file. This container must complete before
             // the others can start, and this is useful when the executor
             // is trying to figure out the moment the VPN is connected.
             init_containers: Some(vec![get_init_container()]),
+            // Main containers will start only after the init container
+            // succeeds. Because all containers in a pod share the same
+            // networking, connecting to a VPN in a sidecar will connect
+            // all other containers as well. The executor will detect
+            // the new/masked IP before starting any downloads.
             containers: vec![
-                // Kubelet will start the VPN sidecar first.
+                // Kubelet will start the VPN container first. If both
+                // images are already available on the node, this should
+                // result in the VPN container starting first.
                 vpn_sidecar,
                 // Starting the executor container last may reduce VPN
                 // connection wait time.
                 Container {
                     name: "executor".to_owned(),
                     image: Some(image),
-                    command: Some(command),
+                    // TODO: inject the imagePullPolicy from the helm chart.
+                    // There needs to be an ExecutorOptions struct corresponding to values.yaml->executor: (?)
+                    image_pull_policy: Some("Always".to_owned()), // FIXME: inject from helm
+                    args: Some(args),
+                    // Pass the full resource as an environment variable.
                     env: Some(vec![EnvVar {
                         name: "RESOURCE".to_owned(),
                         value: Some(resource),
                         ..EnvVar::default()
                     }]),
+                    // We need the shared volume mounted as it contains
+                    // the unmasked IP retrieved during initialization.
                     volume_mounts: Some(vec![VolumeMount {
                         name: "shared".to_owned(),
                         mount_path: "/shared".to_owned(),
@@ -209,6 +245,13 @@ pub async fn create_pod(
                     ..Container::default()
                 },
             ],
+            // Create an in-memory volume that allows data to be shared
+            // between the containers. The init container will write the
+            // unmasked public IP to a file in this volume, and the
+            // executor container will use its contents to determine
+            // when the VPN is truly connected. This allows for the
+            // widest variety of VPN drivers to be used without any
+            // need to write custom logic for each to probe readiness.
             volumes: Some(vec![Volume {
                 name: "shared".to_owned(),
                 empty_dir: Some(EmptyDirVolumeSource {
@@ -221,10 +264,12 @@ pub async fn create_pod(
         ..Pod::default()
     };
 
+    // Create the pod.
     let pod_api: Api<Pod> = Api::namespaced(client, namespace);
     Ok(pod_api.create(&PostParams::default(), &pod).await?)
 }
 
+/// Deletes the download pod for the given Executor.
 pub async fn delete_pod(client: Client, name: &str, namespace: &str) -> Result<(), Error> {
     let api: Api<Pod> = Api::namespaced(client, namespace);
     api.delete(name, &DeleteParams::default()).await?;

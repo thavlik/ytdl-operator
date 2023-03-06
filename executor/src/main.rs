@@ -11,7 +11,6 @@ use ytdl_types::{Executor, ThumbnailStorageSpec};
 
 mod ready;
 
-
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -262,7 +261,7 @@ async fn download_video(
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| Error::GenericError("failed to get child process stdout".to_owned()))?;
+        .ok_or_else(|| Error::UnknownError("failed to get child process stdout".to_owned()))?;
     let mut reader = BufReader::new(stdout);
     let status_code = bucket.put_object_stream(&mut reader, &key).await?;
     if status_code != 200 {

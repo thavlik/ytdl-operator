@@ -224,12 +224,12 @@ impl ExecutorPhase {
 pub struct ExecutorSpec {
     // Metadata jsonl from `youtube-dl -j`. Populated by
     // the parent `Download` resource upon creation.
-    // The actual input URL passed to youtube-dl is the
-    // `webpage_url` field from this structure.
+    // youtube-dl accepts a `--load-info-json` argument
+    // to load metadata from a file, so this field is
+    // ultimately used to avoid re-querying metadata.
     pub metadata: String,
 
-    // Override for ytdl-executor docker image. Default
-    // is thavlik/ytdl-executor:latest
+    // Override for ytdl-executor docker image.
     pub executor: Option<String>,
 
     // Extra arguments to pass to youtube-dl, e.g.

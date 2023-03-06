@@ -1,7 +1,6 @@
 dependencies:
 - executor
 - operator
-- vpn
 env:
   kubernetes:
     resources:

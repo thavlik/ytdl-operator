@@ -1,8 +1,6 @@
 use awsregion::Region;
-use kube::{
-    client::Client, Api, ResourceExt,
-};
 use k8s_openapi::api::core::v1::Secret;
+use kube::{client::Client, Api, ResourceExt};
 use s3::{bucket::Bucket, creds::Credentials};
 use ytdl_types::{Executor, S3OutputSpec};
 
@@ -10,10 +8,10 @@ mod error;
 
 pub use error::Error;
 
-/// Default S3 region
+/// Default S3 region.
 pub const DEFAULT_REGION: &str = "us-east-1";
 
-/// Default output key template
+/// Default output key template.
 pub const DEFAULT_TEMPLATE: &str = "%(id)s.%(ext)s";
 
 /// The IP service to use for getting the public IP address.
@@ -38,7 +36,8 @@ pub async fn get_video_output(
                     instance.namespace().as_ref().unwrap(),
                     metadata,
                     spec,
-                ).await?,
+                )
+                .await?,
             )),
             None => Ok(None),
         },
@@ -60,7 +59,8 @@ pub async fn get_thumbnail_output(
                     instance.namespace().as_ref().unwrap(),
                     metadata,
                     spec,
-                ).await?,
+                )
+                .await?,
             )),
             None => Ok(None),
         },
@@ -96,10 +96,7 @@ async fn output_from_spec(
 /// video's metadata. This requires deserializing the
 /// metadata and iterating over its contents to replace
 /// the template variables with their values.
-fn template_key(
-    metadata: &serde_json::Value,
-    template: &str,
-) -> Result<String, Error> {
+fn template_key(metadata: &serde_json::Value, template: &str) -> Result<String, Error> {
     // Parse the metadata into a generic json object.
     let metadata = metadata
         .as_object()
@@ -148,7 +145,7 @@ async fn get_s3_creds(
                 None, // session token
                 None, // profile
             )?)
-        },
+        }
         None => Ok(Credentials::default()?),
     }
 }

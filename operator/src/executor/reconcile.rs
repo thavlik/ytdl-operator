@@ -373,11 +373,11 @@ async fn determine_download_pod_action(pod: Pod) -> Result<Option<ExecutorAction
     let status: &PodStatus = pod
         .status
         .as_ref()
-        .ok_or_else(|| Error::GenericError("download pod has no status".to_owned()))?;
+        .ok_or_else(|| Error::UnknownError("download pod has no status".to_owned()))?;
     let phase: &str = status
         .phase
         .as_ref()
-        .ok_or_else(|| Error::GenericError("download pod has no phase".to_owned()))?;
+        .ok_or_else(|| Error::UnknownError("download pod has no phase".to_owned()))?;
     match phase {
         "Pending" => {
             // Download is not yet started.
