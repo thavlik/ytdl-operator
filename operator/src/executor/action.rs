@@ -45,7 +45,7 @@ pub fn get_vpn_sidecar() -> Container {
         image: Some("thavlik/nordvpn:latest".to_owned()),
         env: Some(vec![
             EnvVar {
-                name: "NORD_USERNAME".to_owned(),
+                name: "NORDVPN_USERNAME".to_owned(),
                 value_from: Some(EnvVarSource {
                     secret_key_ref: Some(SecretKeySelector {
                         name: Some("nordvpn-creds".to_owned()),
@@ -57,7 +57,7 @@ pub fn get_vpn_sidecar() -> Container {
                 ..EnvVar::default()
             },
             EnvVar {
-                name: "NORD_PASSWORD".to_owned(),
+                name: "NORDVPN_PASSWORD".to_owned(),
                 value_from: Some(EnvVarSource {
                     secret_key_ref: Some(SecretKeySelector {
                         name: Some("nordvpn-creds".to_owned()),

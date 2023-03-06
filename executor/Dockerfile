@@ -9,17 +9,20 @@ RUN apt-get update \
         pkg-config \
         wget \
     && rm -rf /var/lib/apt/lists/*
-WORKDIR /
-RUN cargo new ytdl-executor
-WORKDIR /ytdl-executor
-COPY Cargo.toml .
-#COPY Cargo.lock .
-RUN cargo build \
-    && rm src/*.rs \
-    && rm ./target/debug/ytdl-executor*
-COPY src ./src
+WORKDIR /ytdl-operator
+COPY common common
+COPY types types
+COPY Cargo.lock .
+WORKDIR /ytdl-operator/executor
+COPY executor/Cargo.toml .
+RUN mkdir src \
+    && echo "fn main() {}" > src/main.rs \
+    && cargo build \
+    && rm -rf src \
+    && rm target/debug/ytdl-executor*
+COPY executor/src src
 RUN cargo build
 FROM debian:bullseye-slim
 WORKDIR /
-COPY --from=builder /ytdl-executor/target/debug/ytdl-executor .
+COPY --from=builder /ytdl-operator/executor/target/debug/ytdl-executor .
 CMD ["/ytdl-executor"]

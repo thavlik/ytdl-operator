@@ -7,21 +7,16 @@ edition = "2018"
 [dependencies]
 ytdl-types = { path = "../types" }
 ytdl-common = { path = "../common" }
-tokio = { version = "1.0", features = [
-    "macros",
-    "rt-multi-thread",
-    "process"
-] } # Macros for easy project setup and testing, multi-threaded runtime for best utilization of resources
-tokio-util = { version = "0.7.7", features=["compat"] }
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "process"] }
+tokio-util = { version = "0.7.7", features = ["compat"] }
 kube = { version = "0.78.0", default-features = true, features = [
     "derive",
     "runtime",
-] } # Library for talking to Kubernetes API
+] }
 futures = "0.3"
-# All serde dependencies are used to serialize/deserialize CRDs and other Kubernetes-related structs
 serde = "1"
 serde_json = "1.0"
-thiserror = "1"    # Custom Error definitions and convenient error mappings
+thiserror = "1"
 rust-s3 = { version = "0.32" }
 aws-region = "0.25.1"
 aws-creds = "0.30"

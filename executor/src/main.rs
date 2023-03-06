@@ -227,7 +227,8 @@ async fn download_thumbnail(
         });
     }
     //
-    // TODO: verify mimetype?
+    // TODO: verify mimetype? (see put_object_stream_with_mimetype)
+    // TODO: normalize the image format?
     //
     // Convert the response body to a tokio::ioAsyncRead.
     let mut body = to_tokio_async_read(

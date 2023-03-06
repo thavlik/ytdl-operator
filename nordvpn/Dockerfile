@@ -8,4 +8,6 @@ RUN apt-get update && apt-get install -y \
     procps psmisc \
     && rm -rf /var/lib/apt/lists/*
 RUN bash -c "export DEBIAN_FRONTEND=noninteractive; alias apt-get='apt-get --assume-yes'; bash <(wget -qO - https://downloads.nordcdn.com/apps/linux/install.sh)"
-CMD ["nordvpn"]
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+CMD ["/entrypoint.sh"]
