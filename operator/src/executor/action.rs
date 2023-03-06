@@ -1,11 +1,12 @@
 use k8s_openapi::api::core::v1::{
     Container, EmptyDirVolumeSource, EnvVar, EnvVarSource, Pod, PodSpec, SecretKeySelector, Volume,
-    VolumeMount,
+    VolumeMount, SecurityContext, Capabilities,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::api::{DeleteParams, ObjectMeta, Patch, PatchParams, PostParams};
-use kube::{Api, Client, Error};
+use kube::{Api, Client};
 use std::collections::BTreeMap;
+use ytdl_common::Error;
 use ytdl_types::{Executor, ExecutorPhase, ExecutorStatus};
 
 const MANAGER_NAME: &str = "ytdl-operator";
@@ -41,14 +42,28 @@ pub struct FailureOptions {
 /// https://github.com/thavlik/vpn-operator
 pub fn get_vpn_sidecar() -> Container {
     Container {
-        name: "nordvpn".to_owned(),
-        image: Some("thavlik/nordvpn:latest".to_owned()),
+        name: "vpn".to_owned(),
+        image: Some("thavlik/ytdl-vpn:latest".to_owned()),
+        security_context: Some(SecurityContext {
+            capabilities: Some(Capabilities {
+                add: Some(vec!["NET_ADMIN".to_owned()]),
+                ..Capabilities::default()
+            }),
+            ..SecurityContext::default()
+        }),
         env: Some(vec![
+            // TODO: configure gluetun env vars
+            // https://github.com/qdm12/gluetun/wiki/
             EnvVar {
-                name: "NORDVPN_USERNAME".to_owned(),
+                name: "VPN_SERVICE_PROVIDER".to_owned(),
+                value: Some("private internet access".to_owned()),
+                ..EnvVar::default()
+            },
+            EnvVar {
+                name: "OPENVPN_USER".to_owned(),
                 value_from: Some(EnvVarSource {
                     secret_key_ref: Some(SecretKeySelector {
-                        name: Some("nordvpn-creds".to_owned()),
+                        name: Some("pia-creds".to_owned()),
                         key: "username".to_owned(),
                         ..SecretKeySelector::default()
                     }),
@@ -57,10 +72,10 @@ pub fn get_vpn_sidecar() -> Container {
                 ..EnvVar::default()
             },
             EnvVar {
-                name: "NORDVPN_PASSWORD".to_owned(),
+                name: "OPENVPN_PASSWORD".to_owned(),
                 value_from: Some(EnvVarSource {
                     secret_key_ref: Some(SecretKeySelector {
-                        name: Some("nordvpn-creds".to_owned()),
+                        name: Some("pia-creds".to_owned()),
                         key: "password".to_owned(),
                         ..SecretKeySelector::default()
                     }),
@@ -92,12 +107,8 @@ pub async fn create_pod(
     options: DownloadPodOptions,
 ) -> Result<Pod, Error> {
     // Inject the spec as an environment variable.
-    // Properly handling the error here is nontrivial
-    // because this function returns kube errors only.
-    // In any case, this should never fail, and if it
-    // does, it's a serious bug that warrants detecting.
     let resource: String =
-        serde_json::to_string(instance).expect("failed to marshal resource to json");
+        serde_json::to_string(instance)?;
 
     // Determine the executor image.
     let image: String = instance
@@ -174,7 +185,7 @@ pub async fn create_pod(
     };
 
     let pod_api: Api<Pod> = Api::namespaced(client, namespace);
-    pod_api.create(&PostParams::default(), &pod).await
+    Ok(pod_api.create(&PostParams::default(), &pod).await?)
 }
 
 pub async fn delete_pod(client: Client, name: &str, namespace: &str) -> Result<(), Error> {
@@ -306,7 +317,7 @@ pub mod finalizer {
         let api: Api<Executor> = Api::namespaced(client, namespace);
         let finalizer: Value = json!({
             "metadata": {
-                "finalizers": ["ytdl.org/finalizer"]
+                "finalizers": ["ytdl.beebs.dev/finalizer"]
             }
         });
         let patch: Patch<&Value> = Patch::Merge(&finalizer);

@@ -1,4 +1,15 @@
 dependencies:
-- nordvpn
 - executor
 - operator
+- vpn
+env:
+  kubernetes:
+    resources:
+      - crds/
+      #- secrets/
+    charts:
+      ytdl:
+        name: chart/
+        releaseName: ytdl
+        namespace: ytdl
+        values: {}

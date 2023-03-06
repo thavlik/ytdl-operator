@@ -22,7 +22,11 @@ spec:
         - name: operator
           command:
             - /ytdl-operator
-          imagePullPolicy: {{ .Values.imagePullPolicy }}
-          image: {{ .Values.image }}
+          imagePullPolicy: {{ .Values.operator.imagePullPolicy }}
+          image: {{ .Values.operator.image }}
+          env:
+          - name: EXECUTOR_SPEC
+            value: |
+{{ toYaml .Values.executor | indent 14 }}
           resources:
-{{ toYaml .Values.resources | indent 12 }}
+{{ toYaml .Values.operator.resources | indent 12 }}

@@ -2,10 +2,11 @@ use clap::Parser;
 use futures::TryStreamExt;
 use kube::client::Client;
 use s3::bucket::Bucket;
-use tokio::io::BufReader;
+use tokio::{fs, io::BufReader};
 use tokio::process::Command;
 use ytdl_common::{get_thumbnail_output, get_video_output, Error};
 use ytdl_types::Executor;
+use std::process::Stdio;
 mod ready;
 
 #[derive(Parser, Debug)]
@@ -18,6 +19,8 @@ struct Args {
     download_thumbnail: bool,
 }
 
+/// Returns the precise youtube-dl command to use,
+/// which may be overriden to use e.g. yt-dlp
 fn get_command() -> String {
     std::env::var("YOUTUBE_DL_COMMAND").unwrap_or_else(|_| "youtube-dl".to_owned())
 }
@@ -32,6 +35,12 @@ async fn main() {
     let args = Args::parse();
     let instance: Executor =
         get_resource().expect("failed to get Executor resource from environment");
+
+    // Write the video metadata to a file so youtube-dl
+    // won't query the video service again.
+    fs::write("/info.json", &instance.spec.metadata)
+        .await
+        .expect("failed to write video info json to file");
 
     // Parse the video metadata json from the spec.
     let metadata: serde_json::Value = instance
@@ -94,6 +103,7 @@ async fn main() {
     }
 }
 
+/// Parses the Executor resource from the environment.
 fn get_resource() -> Result<Executor, Error> {
     Ok(serde_json::from_str(&std::env::var("RESOURCE")?)?)
 }
@@ -145,12 +155,12 @@ async fn get_outputs(
 }
 
 /// Builds the AV download command for youtube-dl.
-fn build_cmd(command: &str, webpage_url: &str, extra: Option<&str>) -> String {
-    let mut cmd = format!("{} -o -", command);
+fn build_cmd(command: &str, extra: Option<&str>) -> String {
+    let mut cmd = format!("{} --load-info-json /info.json -o -", command);
     if let Some(extra) = extra {
         cmd = format!("{} {}", cmd, extra);
     }
-    format!("{} -- {}", cmd, webpage_url)
+    cmd
 }
 
 /// Downloads the video and uploads it to the specified output.
@@ -173,8 +183,9 @@ async fn download_video(
     );
     let mut child = Command::new("sh")
         .arg("-c")
-        .arg(&build_cmd(command, webpage_url, extra))
-        .stdout(std::process::Stdio::piped())
+        .arg(&build_cmd(command, extra))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
         .spawn()?;
     let stdout = child
         .stdout

@@ -55,8 +55,8 @@ pub enum Error {
         source: std::io::Error,
     },
 
-    #[error("VPN ready file not found before deadline")]
-    ReadyFileNotFound,
+    #[error("VPN sidecar failure: {0}")]
+    VPNSidecarFailure(String),
 
     #[error("system time error: {source}")]
     SystemTimeError {

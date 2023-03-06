@@ -1,6 +1,15 @@
-image: thavlik/ytdl-operator:latest
-imagePullPolicy: Always
-resources:
-  limits:
-    memory: 128Mi
-    cpu: 100m
+operator:
+  image: thavlik/ytdl-operator:latest
+  imagePullPolicy: Always
+  resources:
+    limits:
+      memory: 128Mi
+      cpu: 100m
+
+executor:
+  image: thavlik/ytdl-executor:latest
+  imagePullPolicy: Always
+  resources:
+    limits:
+      memory: 128Mi
+      cpu: 100m

@@ -14,6 +14,8 @@ use ytdl_common::{get_thumbnail_output, get_video_output, Error};
 use ytdl_types::{Executor, ExecutorPhase};
 
 pub async fn main() {
+    println!("Starting Executor controller...");
+
     // First, a Kubernetes client must be obtained using the `kube` crate
     // The client will later be moved to the custom controller
     let kubernetes_client: Client = Client::try_default()
