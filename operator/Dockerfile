@@ -25,4 +25,5 @@ RUN cargo build
 FROM debian:bullseye-slim
 WORKDIR /
 COPY --from=builder /ytdl-operator/operator/target/debug/ytdl-operator .
+ENV RUST_BACKTRACE=1
 CMD ["/ytdl-operator"]

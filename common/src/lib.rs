@@ -127,17 +127,22 @@ async fn get_s3_creds(
     namespace: &str,
     spec: &S3OutputSpec,
 ) -> Result<Credentials, Error> {
-    let api: Api<Secret> = Api::namespaced(client, namespace);
-    let secret: Secret = api.get(&spec.secret).await?;
-    let access_key_id = get_secret_value(&secret, "access_key_id")?;
-    let secret_access_key = get_secret_value(&secret, "secret_access_key")?;
-    Ok(Credentials::new(
-        access_key_id.as_deref(),
-        secret_access_key.as_deref(),
-        None, // security token
-        None, // session token
-        None, // profile
-    )?)
+    match spec.secret {
+        Some(ref secret) => {
+            let api: Api<Secret> = Api::namespaced(client, namespace);
+            let secret: Secret = api.get(secret).await?;
+            let access_key_id = get_secret_value(&secret, "access_key_id")?;
+            let secret_access_key = get_secret_value(&secret, "secret_access_key")?;
+            Ok(Credentials::new(
+                access_key_id.as_deref(),
+                secret_access_key.as_deref(),
+                None, // security token
+                None, // session token
+                None, // profile
+            )?)
+        },
+        None => Ok(Credentials::default()?),
+    }
 }
 
 /// Returns the secret value for the given key.

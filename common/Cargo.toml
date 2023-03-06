@@ -27,3 +27,4 @@ rust-s3 = { version = "0.32" }
 aws-region = "0.25.1"
 aws-creds = "0.30"
 reqwest = "0.11"
+image = "0.24.5"

@@ -91,54 +91,10 @@ pub enum Error {
         #[from]
         source: reqwest::Error,
     },
-}
 
-/*
-/// All errors possible to occur during reconciliation
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    /// Any error originating from the `kube-rs` crate
-    #[error("Kubernetes error: {source}")]
-    KubeError {
+    #[error("image error: {source}")]
+    ImageError {
         #[from]
-        source: kube::Error,
-    },
-
-    /// Any non-credentials errors from `rust-s3` crate
-    #[error("S3 service error: {source}")]
-    S3Error {
-        #[from]
-        source: s3::error::S3Error,
-    },
-
-    /// Any credentials errors from `rust-s3` crate
-    #[error("S3 credentials error: {source}")]
-    S3CredentialsError {
-        #[from]
-        source: awscreds::error::CredentialsError,
-    },
-
-    
-
-    /// Error converting a string to UTF-8
-    #[error("UTF-8 error: {source}")]
-    Utf8Error {
-        #[from]
-        source: std::str::Utf8Error,
-    },
-
-    /// Serde json decode error
-    #[error("decode json error: {source}")]
-    JSONError {
-        #[from]
-        source: serde_json::Error,
-    },
-
-    /// Environment variable error
-    #[error("missing environment variable: {source}")]
-    EnvError {
-        #[from]
-        source: std::env::VarError,
+        source: image::error::ImageError,
     },
 }
-*/

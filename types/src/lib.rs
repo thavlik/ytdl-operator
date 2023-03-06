@@ -9,7 +9,10 @@ pub struct S3OutputSpec {
 
     // Kubernetes Secret resource name containing S3 credentials
     // as the `accesskeyid` and `secretaccesskey` fields.
-    pub secret: String,
+    // If no credentials are specified, the default creds are used.
+    // This is typical behavior on AWS, but will not be the case
+    // on other S3-compatible platforms.
+    pub secret: Option<String>,
 
     // S3 endpoint (e.g. for DigitalOcean use https://nyc3.digitaloceanspaces.com)
     pub endpoint: Option<String>,
@@ -52,20 +55,9 @@ pub struct MetadataStorageSpec {
 pub struct ThumbnailStorageSpec {
     // Image format (jpg, png, webp, bmp, gif, ico, pgm)
     // The thumbnail will be converted to conform to this format.
+    // If unspecified, the image is not converted.
     // https://crates.io/crates/image-convert
-    pub format: String,
-
-    // Object key template. Refer to youtube-dl documentation:
-    // https://github.com/ytdl-org/youtube-dl#output-template
-    // The metadata json is used to interpolate the values.
-    // If unspecified, the default is "%(id)s.%(ext)s" where
-    // %(ext)s is the format specified in the `format` field.
-    // Tip: when mixing multiple platforms into the same bucket,
-    // use a prefix like "%(extractor)s/" to separate thumbnails
-    // into directories by platform. This way you can avoid
-    // conflicts with videos that share the same ID across
-    // different platforms.
-    pub template: Option<String>,
+    pub format: Option<String>,
 
     // Resize width. If specified, the thumbnail will be resized
     // to this width. If height is also specified, the thumbnail
@@ -76,6 +68,14 @@ pub struct ThumbnailStorageSpec {
     // to this height. If width is also specified, the thumbnail
     // will be resized to fit within the specified dimensions.
     pub height: Option<u32>,
+
+    // Image filter to use when resizing. Valid options are:
+    //  - nearest
+    //  - triangle
+    //  - catmullrom
+    //  - gaussian
+    //  - lanczos3
+    pub filter: Option<String>,
 
     // Amazon S3-compatible output. This is currently the only
     // supported output, but is still optional because others

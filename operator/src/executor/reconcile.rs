@@ -14,8 +14,6 @@ use ytdl_common::{get_thumbnail_output, get_video_output, Error};
 use ytdl_types::{Executor, ExecutorPhase};
 
 pub async fn main() {
-    println!("Starting Executor controller...");
-
     // First, a Kubernetes client must be obtained using the `kube` crate
     // The client will later be moved to the custom controller
     let kubernetes_client: Client = Client::try_default()
@@ -40,6 +38,7 @@ pub async fn main() {
     // - `kube::api::ListParams` to select the `Executor` resources with. Can be used for Executor filtering `Executor` resources before reconciliation,
     // - `reconcile` function with reconciliation logic to be called each time a resource of `Executor` kind is created/updated/deleted,
     // - `on_error` function to call whenever reconciliation fails.
+    println!("Starting Executor controller...");
     Controller::new(crd_api.clone(), ListParams::default())
         .run(reconcile, on_error, context)
         .for_each(|reconciliation_result| async move {

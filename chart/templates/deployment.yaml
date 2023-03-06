@@ -25,6 +25,8 @@ spec:
           imagePullPolicy: {{ .Values.operator.imagePullPolicy }}
           image: {{ .Values.operator.image }}
           env:
+          - name: EXECUTOR_SERVICE_ACCOUNT_NAME
+            value: "{{ .Release.Name }}-operator"
           - name: EXECUTOR_SPEC
             value: |
 {{ toYaml .Values.executor | indent 14 }}

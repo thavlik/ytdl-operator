@@ -33,17 +33,93 @@ spec:
             spec:
               type: object
               required:
-                - service
-              properties: {}
+                - metadata
+                - output
+              properties:
+                metadata:
+                  type: string
+                  description: "video info json metadata from youtube-dl"
+                output:
+                  type: object
+                  description: "output configuration"
+                  properties:
+                    video:
+                      type: object
+                      description: "video output configuration"
+                      properties:
+                        s3:
+                          type: object
+                          properties:
+                            bucket:
+                              type: string
+                            secret:
+                              type: string
+                            endpoint:
+                              type: string
+                            region:
+                              type: string
+                            key:
+                              type: string
+                    thumbnail:
+                      type: object
+                      description: "thumbnail output configuration"
+                      properties:
+                        format:
+                          type: string
+                        width:
+                          type: integer
+                        height:
+                          type: integer
+                        filter:
+                          type: string
+                        s3:
+                          type: object
+                          required:
+                            - bucket
+                          properties:
+                            bucket:
+                              type: string
+                            secret:
+                              type: string
+                            endpoint:
+                              type: string
+                            region:
+                              type: string
+                            key:
+                              type: string
+                    metadata:
+                      type: object
+                      description: "metadata output configuration"
+                      properties:
+                        mongo:
+                          type: object
+                          required:
+                            - secret
+                            - collection
+                          properties:
+                            secret:
+                              type: string
+                            collection:
+                              type: string
+                extra:
+                  type: string
+                  description: "extra youtube-dl arguments"
+                executor:
+                  type: string
+                  description: "executor image to use"
             status:
               type: object
               properties:
                 phase:
                   type: string
-                  description: "brief description of the service's current state"
+                  description: "brief description of the executor's current state"
                 message:
                   type: string
                   description: "longer description of the phase, such as an error message"
                 lastUpdated:
                   type: string
                   description: "describes the recency of the status data"
+                startTime:
+                  type: string
+                  description: "the time the executor pod was started"
+      

@@ -22,3 +22,5 @@ aws-region = "0.25.1"
 aws-creds = "0.30"
 clap = { version = "4.1.8", features = ["derive"] }
 reqwest = "0.11"
+image = "0.24.5"
+scopeguard = "1.1.0"

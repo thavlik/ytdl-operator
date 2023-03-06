@@ -1,5 +1,5 @@
 use std::time::{Duration, SystemTime};
-use tokio::{time, fs};
+use tokio::{fs, time};
 
 use crate::Error;
 
@@ -33,7 +33,8 @@ async fn wait_for_initial_ip() -> Result<String, Error> {
                     if start.elapsed()? > TIMEOUT {
                         // Timed out waiting for VPN to connect.
                         return Err(Error::VPNSidecarFailure(
-                            "timed out waiting for initial ip file".to_owned()));
+                            "timed out waiting for initial ip file".to_owned(),
+                        ));
                     }
                     time::sleep(Duration::from_secs(1)).await;
                     continue;
@@ -55,7 +56,8 @@ async fn wait_for_ip_change(current: &str) -> Result<String, Error> {
         }
         if start.elapsed()? > TIMEOUT {
             return Err(Error::VPNSidecarFailure(
-                "timed out waiting for public ip to change".to_owned()));
+                "timed out waiting for public ip to change".to_owned(),
+            ));
         }
         time::sleep(Duration::from_secs(1)).await;
     }
