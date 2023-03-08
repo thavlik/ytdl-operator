@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-downloads
+  labels:
+    chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+spec:
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-downloads
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-downloads
+    spec:
+    {{- if .Values.imagePullSecrets }}
+      imagePullSecrets:
+{{ toYaml .Values.imagePullSecrets | indent 8 }}
+    {{- end }}
+      serviceAccountName: {{ .Release.Name }}-operator
+      containers:
+        - name: operator
+          command:
+            - /ytdl-operator
+            - manage-downloads
+          imagePullPolicy: {{ .Values.operators.downloads.imagePullPolicy }}
+          image: {{ .Values.operators.downloads.image }}
+          resources:
+{{ toYaml .Values.operators.downloads.resources | indent 12 }}

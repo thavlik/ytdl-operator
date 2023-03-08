@@ -26,8 +26,10 @@ rules:
   - get
 - apiGroups: ["ytdl.beebs.dev"]
   resources:
-  - Executors
-  - Executors/status
+  - downloads
+  - downloads/status
+  - executors
+  - executors/status
   verbs:
   - create
   - delete

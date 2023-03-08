@@ -1,12 +1,21 @@
 use awsregion::Region;
-use k8s_openapi::api::core::v1::Secret;
-use kube::{client::Client, Api, ResourceExt};
+use k8s_openapi::api::core::v1::{PodStatus, Secret};
+use kube::{
+    api::{Api, ObjectMeta, Resource, PostParams},
+    Client, ResourceExt,
+};
 use s3::{bucket::Bucket, creds::Credentials};
-use ytdl_types::{Executor, S3OutputSpec};
+use ytdl_types::{Download, Executor, ExecutorSpec, ExecutorPhase, DownloadPhase, S3OutputSpec};
+use tokio::time::Duration;
+
+pub mod pod;
 
 mod error;
 
 pub use error::Error;
+
+/// Reconciliation return value to requeue the resource immediately.
+pub const IMMEDIATELY: Duration = Duration::ZERO;
 
 /// Default S3 region.
 pub const DEFAULT_REGION: &str = "us-east-1";
@@ -14,35 +23,67 @@ pub const DEFAULT_REGION: &str = "us-east-1";
 /// Default output key template.
 pub const DEFAULT_TEMPLATE: &str = "%(id)s.%(ext)s";
 
-/// The IP service to use for getting the public IP address.
-pub const IP_SERVICE: &str = "https://api.ipify.org";
+/// Default image to use for the executor. The executor
+/// image is responsible for downloading the video and
+/// thumbnail from the video service, and uploading them
+/// to the storage backend in the desired formats.
+pub const DEFAULT_EXECUTOR_IMAGE: &str = "thavlik/ytdl-executor:latest";
 
-/// The file containing the unmasked IP address of the pod.
-/// This is written by an init container so the executor
-/// knows when the VPN is connected.
-pub const IP_FILE_PATH: &str = "/shared/ip";
+/// A tuple containing an S3 Bucket and key, which is the
+/// final output specification for videos and thumbnails.
+/// The spec is ultimately resolved into this object.
+pub type Output = (Bucket, String);
+
+/// Creates a child Executor resource for the given Entity.
+pub async fn create_executor(
+    client: Client,
+    instance: &Download,
+    id: String,
+    metadata: String,
+) -> Result<(), Error> {
+    let executor = get_entity_executor(instance, id, metadata);
+    let api: Api<Executor> = Api::namespaced(client, instance.namespace().as_ref().unwrap());
+    api.create(&PostParams::default(), &executor).await?;
+    Ok(())
+}
+
+pub fn get_executor_service_account_name() -> Result<String, Error> {
+    Ok(std::env::var("EXECUTOR_SERVICE_ACCOUNT_NAME")?)
+}
+
+/// Returns the phase of the Download
+pub fn get_download_phase(instance: &Download) -> Result<DownloadPhase, Error> {
+    let phase: &str = instance.status.as_ref().unwrap().phase.as_ref().unwrap();
+    let phase: DownloadPhase =
+        DownloadPhase::from_str(phase).ok_or_else(|| Error::InvalidPhase(phase.to_string()))?;
+    Ok(phase)
+}
+
+/// Returns the phase of the Executor.
+pub fn get_executor_phase(instance: &Executor) -> Result<ExecutorPhase, Error> {
+    let phase: &str = instance.status.as_ref().unwrap().phase.as_ref().unwrap();
+    let phase: ExecutorPhase =
+        ExecutorPhase::from_str(phase).ok_or_else(|| Error::InvalidPhase(phase.to_string()))?;
+    Ok(phase)
+}
 
 /// Returns the Bucket to be used for video file storage.
 pub async fn get_video_output(
     client: Client,
     metadata: &serde_json::Value,
     instance: &Executor,
-) -> Result<Option<(Bucket, String)>, Error> {
-    match instance.spec.output.video {
-        Some(ref video) => match video.s3 {
-            Some(ref spec) => Ok(Some(
-                output_from_spec(
-                    client,
-                    instance.namespace().as_ref().unwrap(),
-                    metadata,
-                    spec,
-                )
-                .await?,
-            )),
-            None => Ok(None),
-        },
-        None => Ok(None),
-    }
+) -> Result<Option<Output>, Error> {
+    let video = match instance.spec.output.video {
+        Some(ref video) => video,
+        None => return Ok(None),
+    };
+    let s3 = match video.s3 {
+        Some(ref s3) => s3,
+        None => return Ok(None),
+    };
+    let output =
+        output_from_spec(client, instance.namespace().as_ref().unwrap(), metadata, s3).await?;
+    Ok(Some(output))
 }
 
 /// Returns the Bucket to be used for thumbnail storage.
@@ -50,22 +91,18 @@ pub async fn get_thumbnail_output(
     client: Client,
     metadata: &serde_json::Value,
     instance: &Executor,
-) -> Result<Option<(Bucket, String)>, Error> {
-    match instance.spec.output.thumbnail {
-        Some(ref thumbnail) => match thumbnail.s3 {
-            Some(ref spec) => Ok(Some(
-                output_from_spec(
-                    client,
-                    instance.namespace().as_ref().unwrap(),
-                    metadata,
-                    spec,
-                )
-                .await?,
-            )),
-            None => Ok(None),
-        },
-        None => Ok(None),
-    }
+) -> Result<Option<Output>, Error> {
+    let thumbnail = match instance.spec.output.thumbnail {
+        Some(ref thumbnail) => thumbnail,
+        None => return Ok(None),
+    };
+    let s3 = match thumbnail.s3 {
+        Some(ref s3) => s3,
+        None => return Ok(None),
+    };
+    let output =
+        output_from_spec(client, instance.namespace().as_ref().unwrap(), metadata, s3).await?;
+    Ok(Some(output))
 }
 
 /// Returns the S3 Bucket and key template for the given S3OutputSpec.
@@ -77,7 +114,7 @@ async fn output_from_spec(
     namespace: &str,
     metadata: &serde_json::Value,
     output_spec: &S3OutputSpec,
-) -> Result<(Bucket, String), Error> {
+) -> Result<Output, Error> {
     // Build the S3 Bucket object for uploading.
     let region = get_s3_region(output_spec)?;
     let credentials = get_s3_creds(client, namespace, output_spec).await?;
@@ -167,7 +204,9 @@ fn get_secret_value(secret: &Secret, key: &str) -> Result<Option<String>, Error>
 /// Returns the S3 Region object for the given S3OutputSpec.
 fn get_s3_region(spec: &S3OutputSpec) -> Result<Region, Error> {
     let region = match spec.region.as_ref() {
+        // Use the region from the spec.
         Some(region) => region.to_owned(),
+        // Use the default region.
         None => DEFAULT_REGION.to_owned(),
     };
     Ok(match spec.endpoint.as_ref() {
@@ -179,4 +218,75 @@ fn get_s3_region(spec: &S3OutputSpec) -> Result<Region, Error> {
         // The Region object is based solely on the region name.
         None => region.parse()?,
     })
+}
+
+pub fn check_pod_scheduling_error(status: &PodStatus) -> Option<String> {
+    let conditions: &Vec<_> = match status.conditions.as_ref() {
+        Some(conditions) => conditions,
+        None => return None,
+    };
+    for condition in conditions {
+        if condition.type_ == "PodScheduled" && condition.status == "False" {
+            return Some(condition.message
+                .as_deref()
+                .unwrap_or("PodScheduled == False, but no message was provided")
+                .to_owned());
+        }
+    }
+    None
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct Entity {
+    pub id: String,
+    pub metadata: String,
+}
+
+/// Returns an Executor owned by the Download resource that
+/// is configured for the Entity.
+pub fn get_entity_executor(instance: &Download, id: String, metadata: String) -> Executor {
+    // Make the Download the owner of the Executor.
+    let oref = instance.controller_owner_ref(&()).unwrap();
+    Executor {
+        metadata: ObjectMeta {
+            name: Some(format!("{}-{}", instance.name_any(), id)),
+            namespace: Some(instance.namespace().unwrap()),
+            owner_references: Some(vec![oref]),
+            ..Default::default()
+        },
+        spec: ExecutorSpec {
+            // The Executor's metadata is the Entity's metadata.
+            metadata,
+            // Inherit the Download's executor image.
+            executor: instance.spec.executor.clone(),
+            // Inherit the Download's extra arguments.
+            extra: instance.spec.extra.clone(),
+            // Inherit the Download's output spec.
+            output: instance.spec.output.clone(),
+        },
+        ..Default::default()
+    }
+}
+
+/// Returns the Executor owned by the Download resource
+/// that is downloading a video with the given ID.
+pub async fn get_executor(
+    client: Client,
+    name: &str,
+    namespace: &str,
+) -> Result<Option<Executor>, Error> {
+    let executor_api: Api<Executor> = Api::namespaced(client, namespace);
+    match executor_api.get(&name).await {
+        Ok(executor) => Ok(Some(executor)),
+        Err(e) => match &e {
+            kube::Error::Api(ae) => match ae.code {
+                // If the Executor does not exist, return None.
+                404 => Ok(None),
+                // If we can't access it, return an error.
+                _ => Err(e.into()),
+            },
+            // Unknown, non-kube error.
+            _ => Err(e.into()),
+        },
+    }
 }

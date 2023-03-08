@@ -1,3 +1,5 @@
+dependencies:
+- ../yt-dlp
 build:
   name: thavlik/ytdl-executor
   context: ..

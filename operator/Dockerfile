@@ -10,9 +10,9 @@ RUN apt-get update \
         wget \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /ytdl-operator
+COPY Cargo.lock .
 COPY common common
 COPY types types
-COPY Cargo.lock .
 WORKDIR /ytdl-operator/operator
 COPY operator/Cargo.toml .
 RUN mkdir src \

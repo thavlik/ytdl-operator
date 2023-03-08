@@ -9,11 +9,13 @@ use s3::bucket::Bucket;
 use std::sync::Arc;
 use tokio::time::Duration;
 
-use super::action::{self, DownloadPodOptions, FailureOptions, ProgressOptions};
-use ytdl_common::{get_thumbnail_output, get_video_output, Error};
+use super::action::{self, DownloadPodOptions, ProgressOptions};
+use ytdl_common::{get_executor_service_account_name, IMMEDIATELY, get_executor_phase, check_pod_scheduling_error, get_thumbnail_output, get_video_output, Error};
 use ytdl_types::{Executor, ExecutorPhase};
 
 pub async fn main() {
+    println!("Initializing Executor controller...");
+    
     // First, a Kubernetes client must be obtained using the `kube` crate
     // The client will later be moved to the custom controller
     let kubernetes_client: Client = Client::try_default()
@@ -78,7 +80,13 @@ impl ContextData {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-enum ExecutorAction {
+struct FailureOptions {
+    message: String,
+    recreate: bool,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+enum ReconcileAction {
     // The resource first appeared to the controller and requires
     // its phase to be set to "Pending" to indicate that reconciliation
     // is in progress.
@@ -131,7 +139,7 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
     // Read phase of the reconciliation loop.
     let action = determine_action(client.clone(), &instance).await?;
 
-    if action != ExecutorAction::NoOp {
+    if action != ReconcileAction::NoOp {
         // This log line is useful for debugging purposes.
         // Separate read & write phases greatly simplifies
         // the reconciliation loop. Deciding which actions
@@ -143,14 +151,14 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
 
     // Write phase of the reconciliation loop.
     match action {
-        ExecutorAction::Pending => {
+        ReconcileAction::Pending => {
             // Update the status of the resource to reflect that reconciliation is in progress.
             action::pending(client, &name, &namespace, instance.as_ref()).await?;
 
             // Requeue the resource to be immediately reconciled again.
-            Ok(Action::requeue(Duration::ZERO))
+            Ok(Action::requeue(IMMEDIATELY))
         }
-        ExecutorAction::Create(options) => {
+        ReconcileAction::Create(options) => {
             // Apply the finalizer first. This way the Executor resource
             // won't be deleted before the download pod is deleted.
             action::finalizer::add(client.clone(), &name, &namespace).await?;
@@ -172,12 +180,12 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
             // Download pod will take at least a couple seconds to start.
             Ok(Action::requeue(Duration::from_secs(3)))
         }
-        ExecutorAction::Delete => {
+        ReconcileAction::Delete => {
             // Deletes any subresources related to this `Executor` resources. If and only if all subresources
             // are deleted, the finalizer is removed and Kubernetes is free to remove the `Executor` resource.
             action::delete_pod(client.clone(), &name, &namespace).await?;
 
-            // Once the deployment is successfully removed, remove the finalizer to make it possible
+            // Once the pod is successfully removed, remove the finalizer to make it possible
             // for Kubernetes to delete the `Executor` resource (if needed)
             action::finalizer::delete(client, &name, &namespace).await?;
 
@@ -188,9 +196,9 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
 
             // Delete was requested explicitly and the resource isn't pending deletion.
             // Requeue the resource to be immediately reconciled again.
-            Ok(Action::requeue(Duration::ZERO))
+            Ok(Action::requeue(IMMEDIATELY))
         }
-        ExecutorAction::Progress(options) => {
+        ReconcileAction::Progress(options) => {
             // Update the status of the resource to reflect that the
             // download is in progress. In the case that no start time
             // is provided, set the Executor phase to "Starting".
@@ -217,7 +225,7 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
             // before completion occurs.
             Ok(Action::requeue(Duration::from_secs(3)))
         }
-        ExecutorAction::Succeeded => {
+        ReconcileAction::Succeeded => {
             // Update the status of the resource to reflect download completion.
             action::success(client.clone(), &name, &namespace, instance.as_ref()).await?;
 
@@ -228,35 +236,38 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
             action::finalizer::delete(client, &name, &namespace).await?;
 
             // Requeue immediately.
-            Ok(Action::requeue(Duration::ZERO))
+            Ok(Action::requeue(IMMEDIATELY))
         }
-        ExecutorAction::Failure(options) => {
+        ReconcileAction::Failure(options) => {
             // Update the status of the resource to communicate the error.
             action::failure(
                 client.clone(),
                 &name,
                 &namespace,
                 instance.as_ref(),
-                options,
+                options.message,
             )
             .await?;
 
-            // Delete the download pod so it can be recreated.
-            action::delete_pod(client, &name, &namespace).await?;
+            if options.recreate {
+                // Delete the download pod so it can be recreated.
+                action::delete_pod(client, &name, &namespace).await?;
+                // Display the error message for a short period of time
+                // before requeueing as a form of back-off.
+                return Ok(Action::requeue(Duration::from_secs(5)));
+            }
 
-            // Requeue immediately.
-            Ok(Action::requeue(Duration::ZERO))
+            // Wait for the resource to change before requeueing.
+            Ok(Action::await_change())
         }
-        ExecutorAction::NoOp => {
+        ReconcileAction::NoOp => {
             // Nothing to do (resource is fully reconciled).
             Ok(Action::await_change())
         }
     }
 }
 
-fn get_executor_service_account_name() -> Result<String, Error> {
-    Ok(std::env::var("EXECUTOR_SERVICE_ACCOUNT_NAME")?)
-}
+
 
 /// Returns true if the bucket has an object with the given key
 /// and the object is not empty (i.e. corrupt or incomplete).
@@ -335,32 +346,24 @@ async fn check_downloads(client: Client, instance: &Executor) -> Result<(bool, b
     Ok((download_video, download_thumbnail))
 }
 
-/// Returns the phase of the Executor.
-fn get_phase(instance: &Executor) -> Result<ExecutorPhase, Error> {
-    let phase: &str = instance.status.as_ref().unwrap().phase.as_ref().unwrap();
-    let phase: ExecutorPhase =
-        ExecutorPhase::from_str(phase).ok_or_else(|| Error::InvalidPhase(phase.to_string()))?;
-    Ok(phase)
-}
-
 /// Determines the action to take after all downloads have completed.
 /// The controller will first set the Executor phase to Succeeded, then
 /// it will delete the download pod.
 async fn determine_download_success_action(
     client: Client,
     instance: &Executor,
-) -> Result<Option<ExecutorAction>, Error> {
-    if get_phase(instance)? != ExecutorPhase::Succeeded {
+) -> Result<Option<ReconcileAction>, Error> {
+    if get_executor_phase(instance)? != ExecutorPhase::Succeeded {
         // Mark the Executor resource as succeeded before
         // garbage collecting the download pod.
-        return Ok(Some(ExecutorAction::Succeeded));
+        return Ok(Some(ReconcileAction::Succeeded));
     }
     match get_download_pod(client, instance).await? {
         // Garbage collect the download pod. Given that
         // the Delete action is invoked after the pod
         // succeeds, this branch *shouldn't* be reached,
         // but for safety we handle it anyway.
-        Some(_) => Ok(Some(ExecutorAction::Delete)),
+        Some(_) => Ok(Some(ReconcileAction::Delete)),
         // Do nothing and proceed with reconciliation.
         None => Ok(None),
     }
@@ -368,7 +371,7 @@ async fn determine_download_success_action(
 
 /// Determines the action to take given that the download pod
 /// exists and we need to check its status.
-async fn determine_download_pod_action(pod: Pod) -> Result<Option<ExecutorAction>, Error> {
+async fn determine_download_pod_action(pod: Pod) -> Result<Option<ReconcileAction>, Error> {
     // Check the status of the download pod.
     let status: &PodStatus = pod
         .status
@@ -380,42 +383,39 @@ async fn determine_download_pod_action(pod: Pod) -> Result<Option<ExecutorAction
         .ok_or_else(|| Error::UnknownError("download pod has no phase".to_owned()))?;
     match phase {
         "Pending" => {
-            // Download is not yet started.
-            if status.conditions.is_some() {
-                // Check for scheduling problems.
-                let conditions: &Vec<_> = status.conditions.as_ref().unwrap();
-                for condition in conditions {
-                    if condition.type_ == "PodScheduled" && condition.status == "False" {
-                        let message = format!(
-                            "download pod is not scheduled: {}",
-                            condition.message.as_ref().unwrap()
-                        );
-                        return Ok(Some(ExecutorAction::Failure(FailureOptions { message })));
-                    }
-                }
+            if let Some(message) = check_pod_scheduling_error(&status) {
+                // There was some kind of scheduling error. We don't
+                // want to recreate the pod in this case, only report.
+                return Ok(Some(ReconcileAction::Failure(FailureOptions {
+                    message,
+                    recreate: false,
+                })));
             }
             // Download pod is Pending without error.
             // Mark the Executor phase as being in-progress.
-            Ok(Some(ExecutorAction::Progress(ProgressOptions {
+            Ok(Some(ReconcileAction::Progress(ProgressOptions {
                 start_time: None,
             })))
         }
         "Running" => {
             // Download is in progress.
             // TODO: report verbose download statistics.
-            Ok(Some(ExecutorAction::Progress(ProgressOptions {
+            Ok(Some(ReconcileAction::Progress(ProgressOptions {
                 start_time: pod.creation_timestamp(),
             })))
         }
         "Succeeded" => {
             // Download is completed.
-            Ok(Some(ExecutorAction::Succeeded))
+            Ok(Some(ReconcileAction::Succeeded))
         }
         _ => {
             // Report error, delete pod, and re-create.
             // TODO: find way to extract a verbose error message from the pod.
-            let message = format!("pod is in phase {}", phase);
-            Ok(Some(ExecutorAction::Failure(FailureOptions { message })))
+            let message = format!("download pod is in phase {}", phase);
+            Ok(Some(ReconcileAction::Failure(FailureOptions {
+                message,
+                recreate: true,
+            })))
         }
     }
 }
@@ -427,7 +427,7 @@ async fn determine_download_pod_action(pod: Pod) -> Result<Option<ExecutorAction
 async fn determine_download_action(
     client: Client,
     instance: &Executor,
-) -> Result<Option<ExecutorAction>, Error> {
+) -> Result<Option<ReconcileAction>, Error> {
     // We don't want to HEAD the bucket on every loop, so this
     // is optimized by checking the status of the download pod
     // first, as its existence implies that there were files
@@ -450,7 +450,7 @@ async fn determine_download_action(
                 return determine_download_success_action(client, instance).await;
             }
             // Create the download pod, downloading only the requested parts.
-            Ok(Some(ExecutorAction::Create(DownloadPodOptions {
+            Ok(Some(ReconcileAction::Create(DownloadPodOptions {
                 download_video,
                 download_thumbnail,
             })))
@@ -466,10 +466,10 @@ fn needs_pending(instance: &Executor) -> bool {
 }
 
 /// The "read" phase of the reconciliation loop.
-async fn determine_action(client: Client, instance: &Executor) -> Result<ExecutorAction, Error> {
+async fn determine_action(client: Client, instance: &Executor) -> Result<ReconcileAction, Error> {
     if instance.meta().deletion_timestamp.is_some() {
         // We only want to garbage collect child resources.
-        return Ok(ExecutorAction::Delete);
+        return Ok(ReconcileAction::Delete);
     };
 
     // Make sure the status object exists with a phase.
@@ -478,7 +478,7 @@ async fn determine_action(client: Client, instance: &Executor) -> Result<Executo
     // fields without having to check for None values.
     if needs_pending(instance) {
         // The resource first appeared to the control.
-        return Ok(ExecutorAction::Pending);
+        return Ok(ReconcileAction::Pending);
     }
 
     // Check if the video and/or thumbnail need to
@@ -494,7 +494,7 @@ async fn determine_action(client: Client, instance: &Executor) -> Result<Executo
     // Executor is completed will go here.
 
     // Everything is done and there is nothing to do.
-    Ok(ExecutorAction::NoOp)
+    Ok(ReconcileAction::NoOp)
 }
 
 /// Actions to be taken when a reconciliation fails - for whatever reason.

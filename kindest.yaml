@@ -1,6 +1,7 @@
 dependencies:
 - executor
 - operator
+- yt-dlp
 env:
   kubernetes:
     resources:

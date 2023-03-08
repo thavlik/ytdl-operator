@@ -1,18 +1,19 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: executors.ytdl.beebs.dev
+  name: downloads.ytdl.beebs.dev
 spec:
   group: ytdl.beebs.dev
   scope: Namespaced
   names:
-    kind: Executor
-    listKind: ExecutorList
-    plural: executors
-    singular: executor
+    kind: Download
+    listKind: DownloadList
+    plural: downloads
+    singular: download
     shortNames:
-      - ex
-      - exec
+      - dl
+      - down
+      - downl
   versions:
     - name: v1
       served: true
@@ -33,12 +34,15 @@ spec:
             spec:
               type: object
               required:
-                - metadata
+                - query
                 - output
               properties:
-                metadata:
+                query:
                   type: string
-                  description: "video info json metadata from youtube-dl"
+                  description: "youtube-dl input string"
+                ignoreErrors:
+                  type: boolean
+                  description: "ignore errors and continue downloading (-i flag)"
                 output:
                   type: object
                   description: "output configuration"
@@ -104,22 +108,21 @@ spec:
                 extra:
                   type: string
                   description: "extra youtube-dl arguments"
-                executor:
-                  type: string
-                  description: "executor image to use"
             status:
               type: object
               properties:
                 phase:
                   type: string
-                  description: "brief description of the executor's current state"
+                  description: "brief description of the download's current state"
                 message:
                   type: string
                   description: "longer description of the phase, such as an error message"
                 lastUpdated:
                   type: string
                   description: "describes the recency of the status data"
-                startTime:
+                queryStartTime:
                   type: string
-                  description: "the time the executor pod was started"
-      
+                  description: "the time the query pod was started"
+                queryTime:
+                  type: string
+                  description: "the time the query pod completed"

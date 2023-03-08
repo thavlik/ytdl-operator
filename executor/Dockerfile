@@ -1,3 +1,7 @@
+ARG KINDEST_REPOSITORY=""
+ARG KINDEST_TAG="latest"
+ARG RUNTIME_BASE_IMAGE="${KINDEST_REPOSITORY}thavlik/yt-dlp:${KINDEST_TAG}"
+
 FROM rust:1.67.1-slim-bullseye AS builder
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -22,7 +26,8 @@ RUN mkdir src \
 COPY executor/src src
 RUN touch -a -m ./src/main.rs \
     && cargo build
-FROM debian:bullseye-slim
+
+FROM ${RUNTIME_BASE_IMAGE}
 WORKDIR /
 COPY --from=builder /ytdl-operator/executor/target/debug/ytdl-executor .
 ENV RUST_BACKTRACE=1

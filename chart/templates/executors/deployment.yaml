@@ -1,17 +1,17 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Release.Name }}-operator
+  name: {{ .Release.Name }}-executors
   labels:
     chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
 spec:
   selector:
     matchLabels:
-      app: {{ .Release.Name }}-operator
+      app: {{ .Release.Name }}-executors
   template:
     metadata:
       labels:
-        app: {{ .Release.Name }}-operator
+        app: {{ .Release.Name }}-executors
     spec:
     {{- if .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -22,8 +22,9 @@ spec:
         - name: operator
           command:
             - /ytdl-operator
-          imagePullPolicy: {{ .Values.operator.imagePullPolicy }}
-          image: {{ .Values.operator.image }}
+            - manage-executors
+          imagePullPolicy: {{ .Values.operators.executors.imagePullPolicy }}
+          image: {{ .Values.operators.executors.image }}
           env:
           - name: EXECUTOR_SERVICE_ACCOUNT_NAME
             value: "{{ .Release.Name }}-operator"
@@ -31,4 +32,4 @@ spec:
             value: |
 {{ toYaml .Values.executor | indent 14 }}
           resources:
-{{ toYaml .Values.operator.resources | indent 12 }}
+{{ toYaml .Values.operators.executors.resources | indent 12 }}

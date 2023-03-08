@@ -99,4 +99,7 @@ pub enum Error {
         #[from]
         source: image::error::ImageError,
     },
+
+    #[error("pod scheduling error: {0}")]
+    PodSchedulingError(String),
 }

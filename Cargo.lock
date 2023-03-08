@@ -2710,6 +2710,7 @@ version = "0.1.0"
 dependencies = [
  "aws-creds",
  "aws-region",
+ "const_format",
  "futures",
  "image",
  "k8s-openapi",
@@ -2733,6 +2734,7 @@ dependencies = [
  "clap",
  "futures",
  "image",
+ "k8s-openapi",
  "kube",
  "reqwest",
  "rust-s3",
@@ -2753,6 +2755,7 @@ dependencies = [
  "aws-creds",
  "aws-region",
  "chrono",
+ "clap",
  "const_format",
  "futures",
  "k8s-openapi",

@@ -1,4 +1,7 @@
-/target
+/chart
+/crds
+target/
 .idea/
 .vscode/
 secrets/
+example-out.json
