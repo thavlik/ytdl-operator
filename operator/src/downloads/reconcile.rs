@@ -168,7 +168,7 @@ async fn reconcile(instance: Arc<Download>, context: Arc<ContextData>) -> Result
     match action {
         ReconcileAction::Pending => {
             // Update the status of the resource to reflect that reconciliation is in progress.
-            action::pending(client, &name, &namespace, instance.as_ref()).await?;
+            action::pending(client, &name, &namespace, &instance).await?;
 
             // Requeue the resource to be immediately reconciled again.
             Ok(Action::requeue(IMMEDIATELY))
@@ -198,7 +198,7 @@ async fn reconcile(instance: Arc<Download>, context: Arc<ContextData>) -> Result
         ReconcileAction::CreateQueryPod => {
             // Apply the finalizer first. This way the Download resource
             // won't be deleted before the query pod is deleted.
-            action::finalizer::add(client.clone(), &name, &namespace).await?;
+            let instance = action::finalizer::add(client.clone(), &name, &namespace).await?;
 
             // Create the executor pod that queries the info jsonl and
             // creates child Executor resources for each entity.
@@ -206,13 +206,13 @@ async fn reconcile(instance: Arc<Download>, context: Arc<ContextData>) -> Result
                 client.clone(),
                 &name,
                 &namespace,
-                instance.as_ref(),
+                &instance,
                 context.service_account_name.clone(),
             )
             .await?;
 
             // Update the Download's status to reflect the starting query.
-            action::query_starting(client, &name, &namespace, instance.as_ref()).await?;
+            action::query_starting(client, &name, &namespace, &instance).await?;
 
             // Requeue after a short delay to give the pod time to schedule/start.
             Ok(Action::requeue(Duration::from_secs(5)))
@@ -223,7 +223,7 @@ async fn reconcile(instance: Arc<Download>, context: Arc<ContextData>) -> Result
                 client.clone(),
                 &name,
                 &namespace,
-                instance.as_ref(),
+                &instance,
                 options.message,
             )
             .await?;
@@ -243,12 +243,12 @@ async fn reconcile(instance: Arc<Download>, context: Arc<ContextData>) -> Result
             match opts.start_time {
                 // Update the Download's status to reflect the progress of the query.
                 Some(start_time) => {
-                    action::query_progress(client, &name, &namespace, instance.as_ref(), start_time)
+                    action::query_progress(client, &name, &namespace, &instance, start_time)
                         .await?
                 }
                 // Query pod start time is not yet available.
                 None => {
-                    action::query_starting(client, &name, &namespace, instance.as_ref()).await?
+                    action::query_starting(client, &name, &namespace, &instance).await?
                 }
             }
             // Requeue after a short delay to check query progress again.
@@ -260,7 +260,7 @@ async fn reconcile(instance: Arc<Download>, context: Arc<ContextData>) -> Result
                 client,
                 &name,
                 &namespace,
-                instance.as_ref(),
+                &instance,
                 succeeded,
                 total,
             )
@@ -272,17 +272,17 @@ async fn reconcile(instance: Arc<Download>, context: Arc<ContextData>) -> Result
         ReconcileAction::CreateExecutor(entity) => {
             // Apply the finalizer first. This way the Download resource
             // won't be deleted before the child Executor is deleted.
-            action::finalizer::add(client.clone(), &name, &namespace).await?;
+            let instance = action::finalizer::add(client.clone(), &name, &namespace).await?;
 
             // Create the child Executor from the entity.
-            create_executor(client, instance.as_ref(), entity.id, entity.metadata).await?;
+            create_executor(client, &instance, entity.id, entity.metadata).await?;
 
             // Requeue without delay as there may be other Executors to create.
             Ok(Action::requeue(IMMEDIATELY))
         }
         ReconcileAction::Succeeded => {
             // Update the status object to show that the downloads are complete.
-            action::succeeded(client, &name, &namespace, instance.as_ref()).await?;
+            action::succeeded(client, &name, &namespace, &instance).await?;
 
             // Requeue only when the resource changes.
             Ok(Action::await_change())

@@ -156,7 +156,7 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
     match action {
         ReconcileAction::Pending => {
             // Update the status of the resource to reflect that reconciliation is in progress.
-            action::pending(client, &name, &namespace, instance.as_ref()).await?;
+            action::pending(client, &name, &namespace, &instance).await?;
 
             // Requeue the resource to be immediately reconciled again.
             Ok(Action::requeue(IMMEDIATELY))
@@ -164,21 +164,21 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
         ReconcileAction::Create(options) => {
             // Apply the finalizer first. This way the Executor resource
             // won't be deleted before the download pod is deleted.
-            action::finalizer::add(client.clone(), &name, &namespace).await?;
+            let instance = action::finalizer::add(client.clone(), &name, &namespace).await?;
 
             // Create the download pod.
             action::create_pod(
                 client.clone(),
                 &name,
                 &namespace,
-                instance.as_ref(),
+                &instance,
                 context.service_account_name.clone(),
                 options,
             )
             .await?;
 
             // Update the phase to reflect that the download has started.
-            action::starting(client, &name, &namespace, instance.as_ref()).await?;
+            action::starting(client, &name, &namespace, &instance).await?;
 
             // Download pod will take at least a couple seconds to start.
             Ok(Action::requeue(Duration::from_secs(3)))
@@ -212,14 +212,14 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
                         client.clone(),
                         &name,
                         &namespace,
-                        instance.as_ref(),
+                        &instance,
                         start_time,
                     )
                     .await?
                 }
                 // Indicate that the downloads are starting.
                 None => {
-                    action::starting(client.clone(), &name, &namespace, instance.as_ref()).await?
+                    action::starting(client.clone(), &name, &namespace, &instance).await?
                 }
             }
 
@@ -230,7 +230,7 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
         }
         ReconcileAction::Succeeded => {
             // Update the status of the resource to reflect download completion.
-            action::success(client.clone(), &name, &namespace, instance.as_ref()).await?;
+            action::success(client.clone(), &name, &namespace, &instance).await?;
 
             // Delete the download pod before the finalizer is removed.
             action::delete_pod(client.clone(), &name, &namespace).await?;
@@ -247,7 +247,7 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
                 client.clone(),
                 &name,
                 &namespace,
-                instance.as_ref(),
+                &instance,
                 options.message,
             )
             .await?;
