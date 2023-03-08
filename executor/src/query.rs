@@ -127,6 +127,7 @@ pub async fn query(
         // Add the line to the final output ConfigMap, as we know it's valid json.
         lines.push(line);
     }
+
     // Wait for the command to exit.
     let status = child.wait().await?;
     if !status.success() {
@@ -137,6 +138,7 @@ pub async fn query(
     }
     
     // Upload the metadata as a ConfigMap.
+    println!("Creating metadata ConfigMap ({} lines)", lines.len());
     publish_metadata(client, &instance, lines).await?;
     println!("Created metadata ConfigMap");
 
