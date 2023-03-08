@@ -1,10 +1,14 @@
-use std::{env, process::Stdio, collections::BTreeMap};
-use kube::{ResourceExt, Api, client::Client, api::{ObjectMeta, PostParams}};
 use k8s_openapi::api::core::v1::ConfigMap;
-use tokio::process::Command;
+use kube::{
+    api::{ObjectMeta, PostParams},
+    client::Client,
+    Api, ResourceExt,
+};
+use std::{collections::BTreeMap, env, process::Stdio};
 use tokio::io::{AsyncBufReadExt, BufReader};
-use ytdl_common::{create_executor, get_executor, Error};
-use ytdl_types::{Executor, Download};
+use tokio::process::Command;
+use ytdl_common::{create_executor, get_executor, Error, INFO_JSONL_KEY};
+use ytdl_types::Download;
 
 fn build_args(url: &str, ignore_errors: bool) -> Vec<&str> {
     let mut args = vec!["-j"];
@@ -15,6 +19,7 @@ fn build_args(url: &str, ignore_errors: bool) -> Vec<&str> {
     args
 }
 
+/*
 /// Queries the video metadata from the given url.
 pub async fn simple_query(command: &str, url: &str, ignore_errors: bool) -> Result<Vec<String>, Error> {
     let mut child = Command::new(command)
@@ -28,7 +33,7 @@ pub async fn simple_query(command: &str, url: &str, ignore_errors: bool) -> Resu
         .ok_or_else(|| Error::UnknownError("failed to get child process stdout".to_owned()))?;
     // Read the output line-by-line.
     let mut reader = BufReader::new(stdout).lines();
-    let mut lines = Vec::new(); 
+    let mut lines = Vec::new();
     while let Some(line) = reader.next_line().await? {
         // TODO: reconcile the Executor for this line.
         println!("{}", line);
@@ -44,8 +49,9 @@ pub async fn simple_query(command: &str, url: &str, ignore_errors: bool) -> Resu
         status.code().unwrap_or(-1)
     )))
 }
+*/
 
-/// Try to reconcile the Executor associated with this json metadata. 
+/// Try to reconcile the Executor associated with this json metadata.
 async fn reconcile_executor(
     client: Client,
     instance: &Download,
@@ -56,13 +62,16 @@ async fn reconcile_executor(
         client.clone(),
         &format!("{}-{}", instance.name_any(), id),
         instance.namespace().as_ref().unwrap(),
-    ).await?.is_none() {
+    )
+    .await?
+    .is_none()
+    {
         // Create the Executor from this line of output.
         println!("Creating Executor for {}", id);
         create_executor(client, instance, id.to_owned(), line.to_owned()).await?;
     }
     Ok(())
-} 
+}
 
 /// Parses the Download resource from the environment.
 fn get_resource() -> Result<Download, Error> {
@@ -71,20 +80,22 @@ fn get_resource() -> Result<Download, Error> {
 
 /// Queries the video metadata from the given url and creates
 /// Executor resources as needed.
-pub async fn query(
-    command: &str,
-    url: &str,
-    ignore_errors: bool,
-) -> Result<(), Error> {
-    let client: Client = Client::try_default()
-        .await
-        .expect("Expected a valid KUBECONFIG environment variable.");
+pub async fn query(client: Client, command: &str) -> Result<(), Error> {
+    let instance: Download = get_resource()?;
 
-    let instance: Download =
-        get_resource().expect("failed to get Download resource from environment");
+    // Wait for the VPN to connect before starting the query.
+    println!("Environment parsed, waiting for VPN to connect");
+    crate::ready::wait_for_vpn().await?;
 
+    // Build the args for the youtube-dl command.
+    let args = build_args(
+        &instance.spec.query,
+        instance.spec.ignore_errors.unwrap_or(false),
+    );
+
+    // Start the youtube-dl command.
     let mut child = Command::new(command)
-        .args(&build_args(url, ignore_errors)[..])
+        .args(&args[..])
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()?;
@@ -92,9 +103,10 @@ pub async fn query(
         .stdout
         .take()
         .ok_or_else(|| Error::UnknownError("failed to get child process stdout".to_owned()))?;
+
     // Read the output line-by-line.
     let mut reader = BufReader::new(stdout).lines();
-    let mut lines = Vec::new(); 
+    let mut lines = Vec::new();
     while let Some(line) = reader.next_line().await? {
         // Immediately dump the line to the console.
         println!("{}", line);
@@ -118,12 +130,12 @@ pub async fn query(
                 continue;
             }
         };
-    
+
         // Try and create an Executor for the video.
         if let Err(err) = reconcile_executor(client.clone(), &instance, id, &line).await {
             println!("Failed to create Executor for {}: {}", id, err);
         }
-        
+
         // Add the line to the final output ConfigMap, as we know it's valid json.
         lines.push(line);
     }
@@ -136,16 +148,21 @@ pub async fn query(
             status.code().unwrap_or(-1)
         )));
     }
-    
+
     // Upload the metadata as a ConfigMap.
     println!("Creating metadata ConfigMap ({} lines)", lines.len());
     publish_metadata(client, &instance, lines).await?;
-    println!("Created metadata ConfigMap");
 
+    // All done.
+    println!("Successfully queried metadata for {}", &instance.spec.query);
     Ok(())
 }
 
-async fn publish_metadata(client: Client, instance: &Download, lines: Vec<String>) -> Result<(), Error> {
+async fn publish_metadata(
+    client: Client,
+    instance: &Download,
+    lines: Vec<String>,
+) -> Result<(), Error> {
     let namespace = instance.namespace().unwrap();
     let api: Api<ConfigMap> = Api::namespaced(client, &namespace);
     let cm = ConfigMap {
@@ -156,7 +173,7 @@ async fn publish_metadata(client: Client, instance: &Download, lines: Vec<String
         },
         data: Some({
             let mut data = BTreeMap::new();
-            data.insert("info.jsonl".to_owned(), lines.join("\n"));
+            data.insert(INFO_JSONL_KEY.to_owned(), lines.join("\n"));
             data
         }),
         ..Default::default()

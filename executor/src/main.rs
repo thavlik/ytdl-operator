@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use kube::client::Client;
 use std::env;
 use ytdl_common::Error;
 
@@ -16,13 +17,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    Query {
-        #[arg(long)]
-        input: String,
-
-        #[arg(long, short = 'i', default_value_t = false)]
-        ignore_errors: bool,
-    },
+    Query,
 
     Download {
         #[arg(long, default_value_t = false)]
@@ -43,22 +38,22 @@ fn get_command() -> String {
 
 #[tokio::main]
 async fn main() {
+    let client: Client = Client::try_default()
+        .await
+        .expect("Expected a valid KUBECONFIG environment variable.");
     // Get the youtube-dl command to use from the spec.
     let command = get_command();
     // Parse command line options.
     let cli = Cli::parse();
     match cli.command {
-        Some(Command::Query { input, ignore_errors }) => {
-            let result = query::query(&command, &input, ignore_errors)
-                .await
-                .unwrap();
+        Some(Command::Query) => {
+            query::query(client, &command).await.unwrap();
         }
         Some(Command::Download {
             download_video,
             download_thumbnail,
         }) => {
-            download::download(&command, download_video, download_thumbnail)
-                .await;
+            download::download(client, &command, download_video, download_thumbnail).await;
         }
         None => {
             println!("No command specified");

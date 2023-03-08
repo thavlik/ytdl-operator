@@ -1,3 +1,4 @@
+use const_format::concatcp;
 use k8s_openapi::{
     api::core::v1::{
         Capabilities, Container, EmptyDirVolumeSource, EnvVar, EnvVarSource, Pod, PodSpec,
@@ -7,7 +8,6 @@ use k8s_openapi::{
 };
 use kube::api::ObjectMeta;
 use std::collections::BTreeMap;
-use const_format::concatcp;
 
 /// The IP service to use for getting the public IP address.
 pub const IP_SERVICE: &str = "https://api.ipify.org";

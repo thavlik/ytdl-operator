@@ -130,7 +130,7 @@ pub struct DownloadSpec {
     // because the query will continue even if some videos
     // are not available.
     #[serde(rename = "ignoreErrors")]
-    pub ignore_errors: bool,
+    pub ignore_errors: Option<bool>,
 
     // Override for ytdl-executor docker image.
     pub executor: Option<String>,

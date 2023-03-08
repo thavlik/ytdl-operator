@@ -10,12 +10,15 @@ use std::sync::Arc;
 use tokio::time::Duration;
 
 use super::action::{self, DownloadPodOptions, ProgressOptions};
-use ytdl_common::{get_executor_service_account_name, IMMEDIATELY, get_executor_phase, check_pod_scheduling_error, get_thumbnail_output, get_video_output, Error};
+use ytdl_common::{
+    check_pod_scheduling_error, get_executor_phase, get_executor_service_account_name,
+    get_thumbnail_output, get_video_output, Error, IMMEDIATELY,
+};
 use ytdl_types::{Executor, ExecutorPhase};
 
 pub async fn main() {
     println!("Initializing Executor controller...");
-    
+
     // First, a Kubernetes client must be obtained using the `kube` crate
     // The client will later be moved to the custom controller
     let kubernetes_client: Client = Client::try_default()
@@ -266,8 +269,6 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
         }
     }
 }
-
-
 
 /// Returns true if the bucket has an object with the given key
 /// and the object is not empty (i.e. corrupt or incomplete).

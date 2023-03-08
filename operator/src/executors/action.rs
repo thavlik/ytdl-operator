@@ -1,16 +1,17 @@
+use crate::util::MANAGER_NAME;
 use k8s_openapi::{
+    api::core::v1::{Container, EnvVar, Pod, VolumeMount},
     apimachinery::pkg::apis::meta::v1::Time,
-    api::core::v1::{
-        Container, Pod, VolumeMount, EnvVar,
-    }
 };
 use kube::{
-    api::{Api, Patch, PatchParams, DeleteParams, PostParams, Resource},
+    api::{Api, DeleteParams, Patch, PatchParams, PostParams, Resource},
     Client,
 };
-use ytdl_common::{DEFAULT_EXECUTOR_IMAGE, Error, pod::{masked_pod, SHARED_PATH, SHARED_VOLUME_NAME}};
+use ytdl_common::{
+    pod::{masked_pod, SHARED_PATH, SHARED_VOLUME_NAME},
+    Error, DEFAULT_EXECUTOR_IMAGE,
+};
 use ytdl_types::{Executor, ExecutorPhase, ExecutorStatus};
-use crate::util::MANAGER_NAME;
 
 /// Returns the image to use for the executor container.
 /// It may be overridden by the user in the spec, but

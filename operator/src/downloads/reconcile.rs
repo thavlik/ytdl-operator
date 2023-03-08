@@ -1,5 +1,5 @@
 use futures::stream::StreamExt;
-use k8s_openapi::api::core::v1::{Pod, PodStatus, ConfigMap};
+use k8s_openapi::api::core::v1::{ConfigMap, Pod, PodStatus};
 use kube::Resource;
 use kube::ResourceExt;
 use kube::{
@@ -9,12 +9,15 @@ use std::sync::Arc;
 use tokio::time::Duration;
 
 use super::action::{self, ProgressOptions};
-use ytdl_common::{create_executor, get_executor, get_executor_service_account_name, Entity, get_download_phase, IMMEDIATELY, check_pod_scheduling_error, Error};
-use ytdl_types::{Executor, ExecutorPhase, Download, DownloadPhase};
+use ytdl_common::{
+    check_pod_scheduling_error, create_executor, get_download_phase, get_executor,
+    get_executor_service_account_name, Entity, Error, IMMEDIATELY, INFO_JSONL_KEY,
+};
+use ytdl_types::{Download, DownloadPhase, ExecutorPhase};
 
 pub async fn main() {
     println!("Initializing Download controller...");
-    
+
     // First, a Kubernetes client must be obtained using the `kube` crate
     // The client will later be moved to the custom controller
     let kubernetes_client: Client = Client::try_default()
@@ -22,7 +25,7 @@ pub async fn main() {
         .expect("Expected a valid KUBECONFIG environment variable.");
 
     // The executor service account name is required for the query pod
-    // to create its ConfigMap and child Executors. 
+    // to create its ConfigMap and child Executors.
     let service_account_name = get_executor_service_account_name()
         .expect("Expected a valid executor service account name.");
 
@@ -68,7 +71,7 @@ impl ContextData {
     /// # Arguments:
     /// - `client`: A Kubernetes client to make Kubernetes REST API requests with. Resources
     /// will be created and deleted with this client.
-    pub fn new(client: Client, service_account_name: String,) -> Self {
+    pub fn new(client: Client, service_account_name: String) -> Self {
         ContextData {
             client,
             service_account_name,
@@ -102,10 +105,7 @@ enum ReconcileAction {
 
     CreateExecutor(Entity),
 
-    DownloadProgress {
-        succeeded: usize,
-        total: usize,
-    },
+    DownloadProgress { succeeded: usize, total: usize },
 
     Succeeded,
 
@@ -202,7 +202,14 @@ async fn reconcile(instance: Arc<Download>, context: Arc<ContextData>) -> Result
 
             // Create the executor pod that queries the info jsonl and
             // creates child Executor resources for each entity.
-            action::create_query_pod(client.clone(), &name, &namespace, instance.as_ref(), context.service_account_name.clone()).await?;
+            action::create_query_pod(
+                client.clone(),
+                &name,
+                &namespace,
+                instance.as_ref(),
+                context.service_account_name.clone(),
+            )
+            .await?;
 
             // Update the Download's status to reflect the starting query.
             action::query_starting(client, &name, &namespace, instance.as_ref()).await?;
@@ -212,7 +219,14 @@ async fn reconcile(instance: Arc<Download>, context: Arc<ContextData>) -> Result
         }
         ReconcileAction::QueryFailure(options) => {
             // Update the Download's status to include the failure message.
-            action::query_failure(client.clone(), &name, &namespace, instance.as_ref(), options.message).await?;
+            action::query_failure(
+                client.clone(),
+                &name,
+                &namespace,
+                instance.as_ref(),
+                options.message,
+            )
+            .await?;
 
             if options.recreate {
                 // Delete the query pod so it can be recreated.
@@ -228,16 +242,29 @@ async fn reconcile(instance: Arc<Download>, context: Arc<ContextData>) -> Result
         ReconcileAction::QueryProgress(opts) => {
             match opts.start_time {
                 // Update the Download's status to reflect the progress of the query.
-                Some(start_time) => action::query_progress(client, &name, &namespace, instance.as_ref(), start_time).await?,
+                Some(start_time) => {
+                    action::query_progress(client, &name, &namespace, instance.as_ref(), start_time)
+                        .await?
+                }
                 // Query pod start time is not yet available.
-                None => action::query_starting(client, &name, &namespace, instance.as_ref()).await?,
+                None => {
+                    action::query_starting(client, &name, &namespace, instance.as_ref()).await?
+                }
             }
             // Requeue after a short delay to check query progress again.
             Ok(Action::requeue(Duration::from_secs(3)))
         }
         ReconcileAction::DownloadProgress { succeeded, total } => {
             // Update the status object to show download progress.
-            action::download_progress(client, &name, &namespace, instance.as_ref(), succeeded, total).await?;
+            action::download_progress(
+                client,
+                &name,
+                &namespace,
+                instance.as_ref(),
+                succeeded,
+                total,
+            )
+            .await?;
 
             // Requeue after a short delay to check download progress again.
             Ok(Action::requeue(Duration::from_secs(3)))
@@ -275,7 +302,10 @@ fn needs_pending(instance: &Download) -> bool {
 }
 
 /// Returns the ConfigMap that stores the info jsonl for the query.
-async fn get_metadata_configmap(client: Client, instance: &Download) -> Result<Option<ConfigMap>, Error> {
+async fn get_metadata_configmap(
+    client: Client,
+    instance: &Download,
+) -> Result<Option<ConfigMap>, Error> {
     let cm_api: Api<ConfigMap> = Api::namespaced(client, &instance.namespace().unwrap());
     match cm_api.get(&instance.name_any()).await {
         Ok(cm) => Ok(Some(cm)),
@@ -352,7 +382,10 @@ async fn determine_query_pod_action(
             // this is an error condition as the pod completed without
             // creating it. This should never happen and is more of a
             // sanity check than anything.
-            if get_metadata_configmap(client.clone(), instance).await?.is_none() {
+            if get_metadata_configmap(client.clone(), instance)
+                .await?
+                .is_none()
+            {
                 return Ok(ReconcileAction::QueryFailure(QueryFailureOptions {
                     message: "query pod completed without creating metadata ConfigMap".to_owned(),
                     // We want the user to see this error, so don't recreate.
@@ -389,8 +422,6 @@ async fn determine_query_action(
         None => Ok(ReconcileAction::CreateQueryPod),
     }
 }
-
-
 
 fn parse_id(line: &str) -> Result<String, Error> {
     // Parse the video metadata json.
@@ -433,7 +464,9 @@ async fn determine_executor_action(
             client.clone(),
             &executor_name,
             instance.namespace().as_ref().unwrap(),
-        ).await {
+        )
+        .await
+        {
             Ok(Some(executor)) => executor,
             Ok(None) => {
                 // Executor does not exist, create it.
@@ -441,7 +474,7 @@ async fn determine_executor_action(
                     id,
                     metadata: line.to_owned(),
                 }));
-            },
+            }
             Err(e) => {
                 return Err(e);
             }
@@ -460,16 +493,13 @@ async fn determine_executor_action(
                     }
                 }
                 _ => {}
-            }
+            },
             _ => {}
         }
     }
     if succeeded != total {
         // Not all Executors have succeeded, report the progress.
-        return Ok(ReconcileAction::DownloadProgress {
-            succeeded,
-            total,
-        });
+        return Ok(ReconcileAction::DownloadProgress { succeeded, total });
     }
     match get_download_phase(instance)? {
         // Nothing to do, we're already in the Succeeded phase.
@@ -513,12 +543,12 @@ async fn determine_action(client: Client, instance: &Download) -> Result<Reconci
     };
 
     // Get the contents of info.jsonl from the ConfigMap.
-    let data = metadata.data.ok_or_else(|| {
-        Error::UnknownError("metadata ConfigMap has no data".to_owned())
-    })?;
-    let info_jsonl = data.get("info.jsonl").ok_or_else(|| {
-        Error::UnknownError("metadata ConfigMap has no info.jsonl".to_owned())
-    })?;
+    let data = metadata
+        .data
+        .ok_or_else(|| Error::UnknownError("metadata ConfigMap has no data".to_owned()))?;
+    let info_jsonl = data
+        .get(INFO_JSONL_KEY)
+        .ok_or_else(|| Error::UnknownError("metadata ConfigMap has no info.jsonl".to_owned()))?;
 
     // The rest of this controller and the query executor
     // itself share code for creating child Executors from

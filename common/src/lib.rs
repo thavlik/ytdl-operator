@@ -1,12 +1,12 @@
 use awsregion::Region;
 use k8s_openapi::api::core::v1::{PodStatus, Secret};
 use kube::{
-    api::{Api, ObjectMeta, Resource, PostParams},
+    api::{Api, ObjectMeta, PostParams, Resource},
     Client, ResourceExt,
 };
 use s3::{bucket::Bucket, creds::Credentials};
-use ytdl_types::{Download, Executor, ExecutorSpec, ExecutorPhase, DownloadPhase, S3OutputSpec};
 use tokio::time::Duration;
+use ytdl_types::{Download, DownloadPhase, Executor, ExecutorPhase, ExecutorSpec, S3OutputSpec};
 
 pub mod pod;
 
@@ -28,6 +28,9 @@ pub const DEFAULT_TEMPLATE: &str = "%(id)s.%(ext)s";
 /// thumbnail from the video service, and uploading them
 /// to the storage backend in the desired formats.
 pub const DEFAULT_EXECUTOR_IMAGE: &str = "thavlik/ytdl-executor:latest";
+
+/// Key in the ConfigMap for the metadata/info jsonl.
+pub const INFO_JSONL_KEY: &str = "info.jsonl";
 
 /// A tuple containing an S3 Bucket and key, which is the
 /// final output specification for videos and thumbnails.
@@ -227,10 +230,13 @@ pub fn check_pod_scheduling_error(status: &PodStatus) -> Option<String> {
     };
     for condition in conditions {
         if condition.type_ == "PodScheduled" && condition.status == "False" {
-            return Some(condition.message
-                .as_deref()
-                .unwrap_or("PodScheduled == False, but no message was provided")
-                .to_owned());
+            return Some(
+                condition
+                    .message
+                    .as_deref()
+                    .unwrap_or("PodScheduled == False, but no message was provided")
+                    .to_owned(),
+            );
         }
     }
     None

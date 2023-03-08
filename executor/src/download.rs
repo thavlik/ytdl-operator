@@ -13,15 +13,7 @@ use ytdl_types::{Executor, ThumbnailStorageSpec};
 /// for debugging purposes (e.g. `cat /info.json`).
 const INFO_JSON_PATH: &str = "/info.json";
 
-pub async fn download(command: &str, dl_video: bool, dl_thumbnail: bool) {
-    // Prepare the environment first so we can fail early.
-    println!("Preparing download environment");
-
-    // In-cluster, the service account provides the credentials.
-    let client: Client = Client::try_default()
-        .await
-        .expect("Expected a valid KUBECONFIG environment variable.");
-
+pub async fn download(client: Client, command: &str, dl_video: bool, dl_thumbnail: bool) {
     // Parse the resource from the environment.
     let instance: Executor =
         get_resource().expect("failed to get Executor resource from environment");

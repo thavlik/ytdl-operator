@@ -1,14 +1,15 @@
-use k8s_openapi::api::core::v1::{
-    Container, Pod, VolumeMount,
-};
+use crate::util::MANAGER_NAME;
+use k8s_openapi::api::core::v1::{Container, EnvVar, Pod, VolumeMount};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::{
-    api::{Api, Patch, PatchParams, DeleteParams, PostParams, Resource},
+    api::{Api, DeleteParams, Patch, PatchParams, PostParams, Resource},
     Client,
 };
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
-use ytdl_common::{DEFAULT_EXECUTOR_IMAGE, Entity, get_entity_executor, Error, pod::{SHARED_VOLUME_NAME, SHARED_PATH, masked_pod}};
-use ytdl_types::{Executor, Download, DownloadPhase, DownloadStatus};
-use crate::util::MANAGER_NAME;
+use ytdl_common::{
+    pod::{masked_pod, SHARED_PATH, SHARED_VOLUME_NAME},
+    Error, DEFAULT_EXECUTOR_IMAGE,
+};
+use ytdl_types::{Download, DownloadPhase, DownloadStatus};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct ProgressOptions {
@@ -25,16 +26,6 @@ pub async fn delete_query_pod(client: Client, name: &str, namespace: &str) -> Re
     let api: Api<Pod> = Api::namespaced(client, namespace);
     api.delete(name, &DeleteParams::default()).await?;
     Ok(())
-}
-
-/// Returns the args to pass to ytdl-executor that will
-/// wrap youtube-dl and execute the given query.
-fn get_query_args(input: &str, ignore_errors: bool) -> Vec<String> {
-    let mut args = vec!["query".to_owned(), "--input".to_owned(), input.to_owned()];
-    if ignore_errors {
-        args.push("--ignore-errors".to_owned());
-    }
-    args
 }
 
 /// Returns the image to use for the executor container.
@@ -57,19 +48,24 @@ pub async fn create_query_pod(
     instance: &Download,
     service_account_name: String,
 ) -> Result<(), Error> {
-    // Determine the args to pass to the ytdl-executor command.
-    let args = get_query_args(&instance.spec.query, instance.spec.ignore_errors);
-    
     // Determine the executor image.
     let image = get_executor_image(instance);
 
     let container = Container {
         name: "executor".to_owned(),
         image: Some(image),
+        args: Some(vec!["query".to_owned()]),
         // TODO: inject the imagePullPolicy from the helm chart.
         // There needs to be an ExecutorOptions struct corresponding to values.yaml->executor: (?)
         image_pull_policy: Some("Always".to_owned()), // FIXME: inject from helm
-        args: Some(args),
+        env: Some(vec![
+            // Inject the spec as an environment variable.
+            EnvVar {
+                name: "RESOURCE".to_owned(),
+                value: Some(serde_json::to_string(instance)?),
+                ..EnvVar::default()
+            },
+        ]),
         // Pass the full resource as an environment variable.
         // We need the shared volume mounted as it contains
         // the unmasked IP retrieved during initialization.
@@ -114,12 +110,14 @@ pub async fn download_progress(
     total: usize,
 ) -> Result<(), Error> {
     patch_status(client, name, namespace, instance, |status| {
-        status.message = Some(format!("download in progress ({}/{} succeeded)", succeeded, total));
+        status.message = Some(format!(
+            "download in progress ({}/{} succeeded)",
+            succeeded, total
+        ));
         status.phase = Some(DownloadPhase::Downloading.to_str().to_owned());
     })
     .await
 }
-
 
 /// Updates the Download's status object to signal complete success.
 pub async fn succeeded(
