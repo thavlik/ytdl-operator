@@ -294,7 +294,7 @@ async fn reconcile(instance: Arc<Download>, context: Arc<ContextData>) -> Result
     }
 }
 
-/// needs_pending returns true if the video resource
+/// needs_pending returns true if the `Download` resource
 /// requires a status update to set the phase to Pending.
 /// This should be the first action for any managed resource.
 fn needs_pending(instance: &Download) -> bool {
@@ -309,16 +309,8 @@ async fn get_metadata_configmap(
     let cm_api: Api<ConfigMap> = Api::namespaced(client, &instance.namespace().unwrap());
     match cm_api.get(&instance.name_any()).await {
         Ok(cm) => Ok(Some(cm)),
-        Err(e) => match &e {
-            kube::Error::Api(ae) => match ae.code {
-                // If the ConfigMap does not exist, return None.
-                404 => Ok(None),
-                // If we can't access it, return an error.
-                _ => Err(e.into()),
-            },
-            // Unknown, non-kube error.
-            _ => Err(e.into()),
-        },
+        Err(kube::Error::Api(ae)) if ae.code == 404 => Ok(None),
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -327,15 +319,8 @@ async fn get_query_pod(client: Client, instance: &Download) -> Result<Option<Pod
     let pod_api: Api<Pod> = Api::namespaced(client, &instance.namespace().unwrap());
     match pod_api.get(&instance.name_any()).await {
         Ok(pod) => Ok(Some(pod)),
-        Err(e) => match &e {
-            kube::Error::Api(ae) => match ae.code {
-                // If the pod does not exist, return None
-                404 => Ok(None),
-                // If the pod exists but we can't access it, return an error
-                _ => Err(e.into()),
-            },
-            _ => Err(e.into()),
-        },
+        Err(kube::Error::Api(ae)) if ae.code == 404 => Ok(None),
+        Err(e) => Err(e.into()),
     }
 }
 

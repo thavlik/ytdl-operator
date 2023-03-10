@@ -459,7 +459,7 @@ async fn determine_download_action(
     }
 }
 
-/// needs_pending returns true if the video resource
+/// needs_pending returns true if the `Executor` resource
 /// requires a status update to set the phase to Pending.
 /// This should be the first action for any managed resource.
 fn needs_pending(instance: &Executor) -> bool {
