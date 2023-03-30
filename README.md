@@ -5,10 +5,15 @@
 
 > Note that everything is experimental and may change at any time.
 
+> Note this project is in its infancy.
+
 [Kubernetes](https://kubernetes.io/) operator for [youtube-dl](https://github.com/ytdl-org/youtube-dl) written in pure [Rust](https://www.rust-lang.org/).
 
 ## Supported Platforms
 Any platform supported by youtube-dl is also supported by ytdl-operator. For a full list, refer to the [youtube-dl documentation](https://ytb-dl.github.io/ytb-dl/supportedsites.html).
+
+## Related Projects
+- [vpn-operator](https://github.com/thavlik/vpn-operator): a Kubernetes operator for VPN services, used by ytdl-operator.
 
 ## License
 All code in this repository is released under [MIT](LICENSE-MIT) / [Apache 2.0](LICENSE-Apache) dual license, which is extremely permissive. Please open an issue if somehow these terms are insufficient.
