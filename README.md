@@ -7,8 +7,8 @@
 
 [Kubernetes](https://kubernetes.io/) operator for [youtube-dl](https://github.com/ytdl-org/youtube-dl) written in pure [Rust](https://www.rust-lang.org/).
 
-## Supported Websites
-For a full list of supported platforms, refer to the [youtube-dl documentation](https://ytb-dl.github.io/ytb-dl/supportedsites.html).
+## Supported Platforms
+Any platform supported by youtube-dl is also supported by ytdl-operator. For a full list, refer to the [youtube-dl documentation](https://ytb-dl.github.io/ytb-dl/supportedsites.html).
 
 ## License
 All code in this repository is released under [MIT](LICENSE-MIT) / [Apache 2.0](LICENSE-Apache) dual license, which is extremely permissive. Please open an issue if somehow these terms are insufficient.
