@@ -25,5 +25,8 @@ spec:
             - manage-downloads
           imagePullPolicy: {{ .Values.operators.downloads.imagePullPolicy }}
           image: {{ .Values.operators.downloads.image }}
+          env:
+            - name: CONCURRENCY
+              value: "{{ .Values.operators.downloads.concurrency }}"
           resources:
 {{ toYaml .Values.operators.downloads.resources | indent 12 }}

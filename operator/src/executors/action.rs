@@ -5,7 +5,7 @@ use k8s_openapi::{
 };
 use kube::{
     api::{Api, DeleteParams, Patch, PatchParams, PostParams, Resource},
-    Client,
+    Client, CustomResourceExt,
 };
 use ytdl_common::{
     pod::{masked_pod, SHARED_PATH, SHARED_VOLUME_NAME},
@@ -139,75 +139,70 @@ pub async fn delete_pod(client: Client, name: &str, namespace: &str) -> Result<(
 /// Marks the Executor's status as Succeeded.
 pub async fn success(
     client: Client,
-    name: &str,
-    namespace: &str,
     instance: &Executor,
 ) -> Result<(), Error> {
-    patch_status(client, name, namespace, instance, |status| {
+    patch_status(client, instance, |status| {
         status.message = Some("download tasks completed without error".to_owned());
-        status.phase = Some(ExecutorPhase::Succeeded.to_str().to_owned());
+        status.phase = Some(ExecutorPhase::Succeeded);
     })
-    .await
+    .await?;
+    Ok(())
 }
 
 /// Updates the Executor's status object to reflect download progress.
 pub async fn progress(
     client: Client,
-    name: &str,
-    namespace: &str,
     instance: &Executor,
     start_time: Time,
 ) -> Result<(), Error> {
-    patch_status(client, name, namespace, instance, |status| {
+    patch_status(client, instance, |status| {
         status.message = Some("download tasks are in progress".to_owned());
-        status.phase = Some(ExecutorPhase::Downloading.to_str().to_owned());
+        status.phase = Some(ExecutorPhase::Downloading);
         status.start_time = Some(start_time.0.to_rfc3339());
     })
-    .await
+    .await?;
+    Ok(())
 }
 
 /// Updates the Executor's phase to Pending, which indicates
 /// the resource made its initial appearance to the operator.
 pub async fn pending(
     client: Client,
-    name: &str,
-    namespace: &str,
     instance: &Executor,
 ) -> Result<(), Error> {
-    patch_status(client, name, namespace, instance, |status| {
+    patch_status(client, instance, |status| {
         status.message = Some("the resource first appeared to the controller".to_owned());
-        status.phase = Some(ExecutorPhase::Pending.to_str().to_owned());
+        status.phase = Some(ExecutorPhase::Pending);
     })
-    .await
+    .await?;
+    Ok(())
 }
 
 /// Update the Executor's phase to Starting, which indicates
 /// the download pod is currently running.
 pub async fn starting(
     client: Client,
-    name: &str,
-    namespace: &str,
     instance: &Executor,
 ) -> Result<(), Error> {
-    patch_status(client, name, namespace, instance, |status| {
+    patch_status(client, instance, |status| {
         status.message = Some("the download pod is starting".to_owned());
-        status.phase = Some(ExecutorPhase::Starting.to_str().to_owned());
+        status.phase = Some(ExecutorPhase::Starting);
     })
-    .await
+    .await?;
+    Ok(())
 }
 
 pub async fn failure(
     client: Client,
-    name: &str,
-    namespace: &str,
     instance: &Executor,
     message: String,
 ) -> Result<(), Error> {
-    patch_status(client, name, namespace, instance, move |status| {
+    patch_status(client, instance, move |status| {
         status.message = Some(message);
-        status.phase = Some(ExecutorPhase::Failed.to_str().to_owned());
+        status.phase = Some(ExecutorPhase::Failed);
     })
-    .await
+    .await?;
+    Ok(())
 }
 
 /// Patch the Executor's status object with the provided function.
@@ -215,30 +210,25 @@ pub async fn failure(
 /// which is to be mutated in-place. Move closures are supported.
 async fn patch_status(
     client: Client,
-    name: &str,
-    namespace: &str,
     instance: &Executor,
     f: impl FnOnce(&mut ExecutorStatus),
-) -> Result<(), Error> {
+) -> Result<Executor, Error> {
+    let name = instance.metadata.name.as_deref().unwrap();
+    let namespace = instance.metadata.namespace.as_deref().unwrap();
     let patch = Patch::Apply({
-        let mut instance: Executor = instance.clone();
-        let status: &mut ExecutorStatus = match instance.status.as_mut() {
-            Some(status) => status,
-            None => {
-                // Create the status object.
-                instance.status = Some(ExecutorStatus::default());
-                instance.status.as_mut().unwrap()
-            }
-        };
-        f(status);
-        let now = chrono::Utc::now().to_rfc3339();
-        status.last_updated = Some(now);
-        instance
+        let mut status = instance.status.clone().unwrap_or_default();
+        f(&mut status);
+        status.last_updated = Some(chrono::Utc::now().to_rfc3339());
+        serde_json::json!({
+            "apiVersion": "vpn.beebs.dev/v1",
+            "kind": Executor::crd().spec.names.kind.clone(),
+            "status": status,
+        })
     });
     let api: Api<Executor> = Api::namespaced(client, namespace);
-    api.patch(name, &PatchParams::apply(MANAGER_NAME), &patch)
-        .await?;
-    Ok(())
+    Ok(api
+        .patch_status(name, &PatchParams::apply(MANAGER_NAME), &patch)
+        .await?)
 }
 
 pub mod finalizer {

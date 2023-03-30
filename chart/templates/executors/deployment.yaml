@@ -26,10 +26,12 @@ spec:
           imagePullPolicy: {{ .Values.operators.executors.imagePullPolicy }}
           image: {{ .Values.operators.executors.image }}
           env:
-          - name: EXECUTOR_SERVICE_ACCOUNT_NAME
-            value: "{{ .Release.Name }}-operator"
-          - name: EXECUTOR_SPEC
-            value: |
-{{ toYaml .Values.executor | indent 14 }}
+            - name: CONCURRENCY
+              value: "{{ .Values.operators.executors.concurrency }}"
+            - name: EXECUTOR_SERVICE_ACCOUNT_NAME
+              value: "{{ .Release.Name }}-operator"
+            - name: EXECUTOR_SPEC
+              value: |
+{{ toYaml .Values.executor | indent 16 }}
           resources:
 {{ toYaml .Values.operators.executors.resources | indent 12 }}

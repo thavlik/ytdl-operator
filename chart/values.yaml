@@ -2,6 +2,12 @@ imagePullSecrets: []
 
 operators:
   downloads:
+    # Maximum number of concurrent query pods.
+    # The number of concurrent queries can also be throttled by
+    # waiting on a Mask.vpn.beebs.dev resource to be become Active.
+    # In this case, you can set the value to zero to disable limits,
+    # which will cause query pods to be created immediately.
+    concurrency: 1
     image: thavlik/ytdl-operator:latest
     imagePullPolicy: Always
     resources:
@@ -9,6 +15,12 @@ operators:
         memory: 128Mi
         cpu: 100m
   executors:
+    # Maximum number of concurrent executor pods.
+    # The number of concurrent downloads can also be throttled by
+    # waiting on a Mask.vpn.beebs.dev resource to be become Active.
+    # In this case, you can set the value to zero to disable limits,
+    # thereby immediately creating a pod for each Executor.
+    concurrency: 1
     image: thavlik/ytdl-operator:latest
     imagePullPolicy: Always
     resources:

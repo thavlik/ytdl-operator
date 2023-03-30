@@ -5,6 +5,10 @@ authors = ["Tom Havlik (thavlik@protonmail.com)"]
 edition = "2018"
 
 [dependencies]
+# For now you must clone the vpn-operator repo
+# next to the ytdl-operator repo:
+# git clone https://github.com/thavlik/vpn-operator ../vpn-operator
+vpn-types = { path = "../../vpn-operator/types" }
 ytdl-types = { path = "../types" }
 ytdl-common = { path = "../common" }
 chrono = "0.4.23"

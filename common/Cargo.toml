@@ -29,3 +29,10 @@ aws-creds = "0.30"
 reqwest = "0.11"
 image = "0.24.5"
 const_format = "0.2.30"
+
+[build-dependencies]
+serde_yaml = "0.9"
+ytdl-types = { path = "../types" }
+kube = { version = "0.78.0", default-features = true, features = [
+    "derive",
+] }

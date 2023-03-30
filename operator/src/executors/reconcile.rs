@@ -15,6 +15,7 @@ use ytdl_common::{
     get_thumbnail_output, get_video_output, Error, IMMEDIATELY,
 };
 use ytdl_types::{Executor, ExecutorPhase};
+use crate::util::get_concurrency;
 
 pub async fn main() {
     println!("Initializing Executor controller...");
@@ -35,6 +36,7 @@ pub async fn main() {
     let context: Arc<ContextData> = Arc::new(ContextData::new(
         kubernetes_client.clone(),
         service_account_name,
+        get_concurrency(),
     ));
 
     // The controller comes from the `kube_runtime` crate and manages the reconciliation process.
@@ -66,6 +68,8 @@ struct ContextData {
 
     /// Service account name for the download pod. The download pod needs access to secrets.
     service_account_name: String,
+
+    concurrency: usize,
 }
 
 impl ContextData {
@@ -74,10 +78,11 @@ impl ContextData {
     /// # Arguments:
     /// - `client`: A Kubernetes client to make Kubernetes REST API requests with. Resources
     /// will be created and deleted with this client.
-    pub fn new(client: Client, service_account_name: String) -> Self {
+    pub fn new(client: Client, service_account_name: String, concurrency: usize) -> Self {
         ContextData {
             client,
             service_account_name,
+            concurrency,
         }
     }
 }
@@ -156,12 +161,16 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
     match action {
         ReconcileAction::Pending => {
             // Update the status of the resource to reflect that reconciliation is in progress.
-            action::pending(client, &name, &namespace, &instance).await?;
+            action::pending(client, &instance).await?;
 
             // Requeue the resource to be immediately reconciled again.
             Ok(Action::requeue(IMMEDIATELY))
         }
         ReconcileAction::Create(options) => {
+            if context.concurrency > 0 {
+                // Ensure the number of running pods is below the concurrency limit.
+            }
+            
             // Apply the finalizer first. This way the Executor resource
             // won't be deleted before the download pod is deleted.
             let instance = action::finalizer::add(client.clone(), &name, &namespace).await?;
@@ -178,7 +187,7 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
             .await?;
 
             // Update the phase to reflect that the download has started.
-            action::starting(client, &name, &namespace, &instance).await?;
+            action::starting(client, &instance).await?;
 
             // Download pod will take at least a couple seconds to start.
             Ok(Action::requeue(Duration::from_secs(3)))
@@ -210,8 +219,6 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
                 Some(start_time) => {
                     action::progress(
                         client.clone(),
-                        &name,
-                        &namespace,
                         &instance,
                         start_time,
                     )
@@ -219,7 +226,7 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
                 }
                 // Indicate that the downloads are starting.
                 None => {
-                    action::starting(client.clone(), &name, &namespace, &instance).await?
+                    action::starting(client.clone(), &instance).await?
                 }
             }
 
@@ -230,7 +237,7 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
         }
         ReconcileAction::Succeeded => {
             // Update the status of the resource to reflect download completion.
-            action::success(client.clone(), &name, &namespace, &instance).await?;
+            action::success(client.clone(), &instance).await?;
 
             // Delete the download pod before the finalizer is removed.
             action::delete_pod(client.clone(), &name, &namespace).await?;
@@ -245,8 +252,6 @@ async fn reconcile(instance: Arc<Executor>, context: Arc<ContextData>) -> Result
             // Update the status of the resource to communicate the error.
             action::failure(
                 client.clone(),
-                &name,
-                &namespace,
                 &instance,
                 options.message,
             )

@@ -3,7 +3,7 @@ use k8s_openapi::api::core::v1::{Container, EnvVar, Pod, VolumeMount};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::{
     api::{Api, DeleteParams, Patch, PatchParams, PostParams, Resource},
-    Client,
+    Client, CustomResourceExt,
 };
 use ytdl_common::{
     pod::{masked_pod, SHARED_PATH, SHARED_VOLUME_NAME},
@@ -103,95 +103,103 @@ pub async fn create_query_pod(
 /// Updates the Download's status object to reflect download progress.
 pub async fn download_progress(
     client: Client,
-    name: &str,
-    namespace: &str,
     instance: &Download,
     succeeded: usize,
     total: usize,
 ) -> Result<(), Error> {
-    patch_status(client, name, namespace, instance, |status| {
+    patch_status(client, instance, |status| {
         status.message = Some(format!(
             "download in progress ({}/{} succeeded)",
             succeeded, total
         ));
-        status.phase = Some(DownloadPhase::Downloading.to_str().to_owned());
+        status.phase = Some(DownloadPhase::Downloading);
     })
-    .await
+    .await?;
+    Ok(())
+}
+
+/// Updates the Download's status object to signal it is waiting
+/// for other queries to finish before it proceeds.
+pub async fn throttled(
+    client: Client,
+    instance: &Download,
+) -> Result<(), Error> {
+    patch_status(client, instance, |status| {
+        status.message = Some("waiting for other queries to finish".to_owned());
+        status.phase = Some(DownloadPhase::Throttled);
+    })
+    .await?;
+    Ok(())
 }
 
 /// Updates the Download's status object to signal complete success.
 pub async fn succeeded(
     client: Client,
-    name: &str,
-    namespace: &str,
     instance: &Download,
 ) -> Result<(), Error> {
-    patch_status(client, name, namespace, instance, |status| {
+    patch_status(client, instance, |status| {
         status.message = Some("all downloads have succeeded".to_owned());
-        status.phase = Some(DownloadPhase::Succeeded.to_str().to_owned());
+        status.phase = Some(DownloadPhase::Succeeded);
     })
-    .await
+    .await?;
+    Ok(())
 }
 
 /// Updates the Download's status object to reflect query progress.
 pub async fn query_progress(
     client: Client,
-    name: &str,
-    namespace: &str,
     instance: &Download,
     start_time: Time,
 ) -> Result<(), Error> {
-    patch_status(client, name, namespace, instance, |status| {
+    patch_status(client, instance, |status| {
         status.message = Some("querying in progress".to_owned());
-        status.phase = Some(DownloadPhase::Querying.to_str().to_owned());
+        status.phase = Some(DownloadPhase::Querying);
         status.query_start_time = Some(start_time.0.to_rfc3339());
     })
-    .await
+    .await?;
+    Ok(())
 }
 
 /// Updates the Download's phase to Pending, which indicates
 /// the resource made its initial appearance to the operator.
 pub async fn pending(
     client: Client,
-    name: &str,
-    namespace: &str,
     instance: &Download,
 ) -> Result<(), Error> {
-    patch_status(client, name, namespace, instance, |status| {
+    patch_status(client, instance, |status| {
         status.message = Some("the resource first appeared to the controller".to_owned());
-        status.phase = Some(DownloadPhase::Pending.to_str().to_owned());
+        status.phase = Some(DownloadPhase::Pending);
     })
-    .await
+    .await?;
+    Ok(())
 }
 
 /// Update the Download's phase to Starting, which indicates
 /// the query pod is initializing.
 pub async fn query_starting(
     client: Client,
-    name: &str,
-    namespace: &str,
     instance: &Download,
 ) -> Result<(), Error> {
-    patch_status(client, name, namespace, instance, |status| {
+    patch_status(client, instance, |status| {
         status.message = Some("the query pod is starting".to_owned());
-        status.phase = Some(DownloadPhase::QueryStarting.to_str().to_owned());
+        status.phase = Some(DownloadPhase::QueryStarting);
     })
-    .await
+    .await?;
+    Ok(())
 }
 
 /// Updates the Download's status object to reflect query failure.
 pub async fn query_failure(
     client: Client,
-    name: &str,
-    namespace: &str,
     instance: &Download,
     message: String,
 ) -> Result<(), Error> {
-    patch_status(client, name, namespace, instance, move |status| {
+    patch_status(client, instance, move |status| {
         status.message = Some(message);
-        status.phase = Some(DownloadPhase::ErrQueryFailed.to_str().to_owned());
+        status.phase = Some(DownloadPhase::ErrQueryFailed);
     })
-    .await
+    .await?;
+    Ok(())
 }
 
 /// Patch the Download's status object with the provided function.
@@ -199,30 +207,25 @@ pub async fn query_failure(
 /// which is to be mutated in-place. Move closures are supported.
 async fn patch_status(
     client: Client,
-    name: &str,
-    namespace: &str,
     instance: &Download,
     f: impl FnOnce(&mut DownloadStatus),
-) -> Result<(), Error> {
+) -> Result<Download, Error> {
+    let name = instance.metadata.name.as_deref().unwrap();
+    let namespace = instance.metadata.namespace.as_deref().unwrap();
     let patch = Patch::Apply({
-        let mut instance: Download = instance.clone();
-        let status: &mut DownloadStatus = match instance.status.as_mut() {
-            Some(status) => status,
-            None => {
-                // Create the status object.
-                instance.status = Some(DownloadStatus::default());
-                instance.status.as_mut().unwrap()
-            }
-        };
-        f(status);
-        let now = chrono::Utc::now().to_rfc3339();
-        status.last_updated = Some(now);
-        instance
+        let mut status = instance.status.clone().unwrap_or_default();
+        f(&mut status);
+        status.last_updated = Some(chrono::Utc::now().to_rfc3339());
+        serde_json::json!({
+            "apiVersion": "vpn.beebs.dev/v1",
+            "kind": Download::crd().spec.names.kind.clone(),
+            "status": status,
+        })
     });
     let api: Api<Download> = Api::namespaced(client, namespace);
-    api.patch(name, &PatchParams::apply(MANAGER_NAME), &patch)
-        .await?;
-    Ok(())
+    Ok(api
+        .patch_status(name, &PatchParams::apply(MANAGER_NAME), &patch)
+        .await?)
 }
 
 pub mod finalizer {

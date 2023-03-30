@@ -41,9 +41,9 @@ pub fn get_vpn_sidecar() -> Container {
         security_context: Some(SecurityContext {
             capabilities: Some(Capabilities {
                 add: Some(vec!["NET_ADMIN".to_owned()]),
-                ..Capabilities::default()
+                ..Default::default()
             }),
-            ..SecurityContext::default()
+            ..Default::default()
         }),
         env: Some(vec![
             // TODO: configure gluetun env vars
@@ -51,12 +51,12 @@ pub fn get_vpn_sidecar() -> Container {
             EnvVar {
                 name: "VPN_SERVICE_PROVIDER".to_owned(),
                 value: Some("private internet access".to_owned()),
-                ..EnvVar::default()
+                ..Default::default()
             },
             EnvVar {
                 name: "IP_SERVICE".to_owned(),
                 value: Some(IP_SERVICE.to_owned()),
-                ..EnvVar::default()
+                ..Default::default()
             },
             EnvVar {
                 name: "OPENVPN_USER".to_owned(),
@@ -64,11 +64,11 @@ pub fn get_vpn_sidecar() -> Container {
                     secret_key_ref: Some(SecretKeySelector {
                         name: Some("pia-creds".to_owned()),
                         key: "username".to_owned(),
-                        ..SecretKeySelector::default()
+                        ..Default::default()
                     }),
-                    ..EnvVarSource::default()
+                    ..Default::default()
                 }),
-                ..EnvVar::default()
+                ..Default::default()
             },
             EnvVar {
                 name: "OPENVPN_PASSWORD".to_owned(),
@@ -76,11 +76,11 @@ pub fn get_vpn_sidecar() -> Container {
                     secret_key_ref: Some(SecretKeySelector {
                         name: Some("pia-creds".to_owned()),
                         key: "password".to_owned(),
-                        ..SecretKeySelector::default()
+                        ..Default::default()
                     }),
-                    ..EnvVarSource::default()
+                    ..Default::default()
                 }),
-                ..EnvVar::default()
+                ..Default::default()
             },
         ]),
         ..Container::default()

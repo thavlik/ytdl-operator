@@ -56,18 +56,12 @@ pub fn get_executor_service_account_name() -> Result<String, Error> {
 
 /// Returns the phase of the Download
 pub fn get_download_phase(instance: &Download) -> Result<DownloadPhase, Error> {
-    let phase: &str = instance.status.as_ref().unwrap().phase.as_ref().unwrap();
-    let phase: DownloadPhase =
-        DownloadPhase::from_str(phase).ok_or_else(|| Error::InvalidPhase(phase.to_string()))?;
-    Ok(phase)
+    Ok(instance.status.as_ref().unwrap().phase.unwrap())
 }
 
 /// Returns the phase of the Executor.
 pub fn get_executor_phase(instance: &Executor) -> Result<ExecutorPhase, Error> {
-    let phase: &str = instance.status.as_ref().unwrap().phase.as_ref().unwrap();
-    let phase: ExecutorPhase =
-        ExecutorPhase::from_str(phase).ok_or_else(|| Error::InvalidPhase(phase.to_string()))?;
-    Ok(phase)
+    Ok(instance.status.as_ref().unwrap().phase.unwrap())
 }
 
 /// Returns the Bucket to be used for video file storage.

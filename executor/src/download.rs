@@ -32,7 +32,7 @@ pub async fn download(client: Client, command: &str, dl_video: bool, dl_thumbnai
         .expect("failed to parse video info json");
 
     // Get the extra args from the spec.
-    let extra: Option<&str> = instance.spec.extra.as_deref();
+    let extra: &Option<Vec<String>> = &instance.spec.extra;
 
     // Determine what we need to do, download-wise, and
     // get the output objects at the same time.
@@ -224,10 +224,13 @@ async fn get_outputs(
 
 /// Builds the AV download command for youtube-dl.
 /// Other commands (e.g. yt-dlp) are injected here.
-fn build_cmd(command: &str, extra: Option<&str>) -> String {
-    let mut cmd = format!("{} --load-info-json {} -o -", command, INFO_JSON_PATH,);
-    if let Some(extra) = extra {
-        cmd = format!("{} {}", cmd, extra);
+fn build_args(extra: &Option<Vec<String>>) -> Vec<&str> {
+    let mut cmd = vec![
+        "--load-info-json",
+        INFO_JSON_PATH,
+    ];
+    if let Some(ref extra) = extra {
+        extra.iter().for_each(|arg| cmd.push(&arg));
     }
     cmd
 }
@@ -238,7 +241,7 @@ async fn download_video(
     bucket: Bucket,
     key: String,
     command: &str,
-    extra: Option<&str>,
+    extra: &Option<Vec<String>>,
 ) -> Result<(), Error> {
     // We pass the webpage_url value as the query to youtub-dl.
     let webpage_url: &str = metadata
@@ -250,9 +253,8 @@ async fn download_video(
         "Downloading video {} -> s3://{}/{}",
         webpage_url, &bucket.name, &key
     );
-    let mut child = Command::new("sh")
-        .arg("-c")
-        .arg(&build_cmd(command, extra))
+    let mut child = Command::new(command)
+        .args(&build_args(extra)[..])
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()?;

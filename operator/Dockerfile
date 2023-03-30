@@ -9,6 +9,7 @@ RUN apt-get update \
         pkg-config \
         wget \
     && rm -rf /var/lib/apt/lists/*
+RUN git clone https://github.com/thavlik/vpn-operator.git /vpn-operator
 WORKDIR /ytdl-operator
 COPY Cargo.lock .
 COPY common common

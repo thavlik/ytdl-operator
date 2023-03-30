@@ -14,6 +14,7 @@ use ytdl_common::{
     get_executor_service_account_name, Entity, Error, IMMEDIATELY, INFO_JSONL_KEY,
 };
 use ytdl_types::{Download, DownloadPhase, ExecutorPhase};
+use crate::util::get_concurrency;
 
 pub async fn main() {
     println!("Initializing Download controller...");
@@ -34,6 +35,7 @@ pub async fn main() {
     let context: Arc<ContextData> = Arc::new(ContextData::new(
         kubernetes_client.clone(),
         service_account_name,
+        get_concurrency(),
     ));
 
     // The controller comes from the `kube_runtime` crate and manages the reconciliation process.
@@ -58,10 +60,13 @@ pub async fn main() {
         .await;
 }
 
+
+
 /// Context injected with each `reconcile` and `on_error` method invocation.
 struct ContextData {
     /// Kubernetes client to make Kubernetes API requests with. Required for K8S resource management.
     client: Client,
+    concurrency: usize,
     service_account_name: String,
 }
 
@@ -71,10 +76,15 @@ impl ContextData {
     /// # Arguments:
     /// - `client`: A Kubernetes client to make Kubernetes REST API requests with. Resources
     /// will be created and deleted with this client.
-    pub fn new(client: Client, service_account_name: String) -> Self {
+    pub fn new(
+        client: Client,
+        service_account_name: String,
+        concurrency: usize,
+    ) -> Self {
         ContextData {
             client,
             service_account_name,
+            concurrency,
         }
     }
 }
@@ -168,7 +178,7 @@ async fn reconcile(instance: Arc<Download>, context: Arc<ContextData>) -> Result
     match action {
         ReconcileAction::Pending => {
             // Update the status of the resource to reflect that reconciliation is in progress.
-            action::pending(client, &name, &namespace, &instance).await?;
+            action::pending(client, &instance).await?;
 
             // Requeue the resource to be immediately reconciled again.
             Ok(Action::requeue(IMMEDIATELY))
@@ -196,6 +206,12 @@ async fn reconcile(instance: Arc<Download>, context: Arc<ContextData>) -> Result
             Ok(Action::requeue(IMMEDIATELY))
         }
         ReconcileAction::CreateQueryPod => {
+            if is_throttled(client.clone(), context.concurrency).await? {
+                action::throttled(client, &instance).await?;
+                return Ok(Action::requeue(Duration::from_secs(15)));
+            }
+            // TODO: reserve a slot in the semaphore
+
             // Apply the finalizer first. This way the Download resource
             // won't be deleted before the query pod is deleted.
             let instance = action::finalizer::add(client.clone(), &name, &namespace).await?;
@@ -212,7 +228,7 @@ async fn reconcile(instance: Arc<Download>, context: Arc<ContextData>) -> Result
             .await?;
 
             // Update the Download's status to reflect the starting query.
-            action::query_starting(client, &name, &namespace, &instance).await?;
+            action::query_starting(client, &instance).await?;
 
             // Requeue after a short delay to give the pod time to schedule/start.
             Ok(Action::requeue(Duration::from_secs(5)))
@@ -221,8 +237,6 @@ async fn reconcile(instance: Arc<Download>, context: Arc<ContextData>) -> Result
             // Update the Download's status to include the failure message.
             action::query_failure(
                 client.clone(),
-                &name,
-                &namespace,
                 &instance,
                 options.message,
             )
@@ -243,12 +257,12 @@ async fn reconcile(instance: Arc<Download>, context: Arc<ContextData>) -> Result
             match opts.start_time {
                 // Update the Download's status to reflect the progress of the query.
                 Some(start_time) => {
-                    action::query_progress(client, &name, &namespace, &instance, start_time)
+                    action::query_progress(client, &instance, start_time)
                         .await?
                 }
                 // Query pod start time is not yet available.
                 None => {
-                    action::query_starting(client, &name, &namespace, &instance).await?
+                    action::query_starting(client, &instance).await?
                 }
             }
             // Requeue after a short delay to check query progress again.
@@ -258,8 +272,6 @@ async fn reconcile(instance: Arc<Download>, context: Arc<ContextData>) -> Result
             // Update the status object to show download progress.
             action::download_progress(
                 client,
-                &name,
-                &namespace,
                 &instance,
                 succeeded,
                 total,
@@ -282,7 +294,7 @@ async fn reconcile(instance: Arc<Download>, context: Arc<ContextData>) -> Result
         }
         ReconcileAction::Succeeded => {
             // Update the status object to show that the downloads are complete.
-            action::succeeded(client, &name, &namespace, &instance).await?;
+            action::succeeded(client, &instance).await?;
 
             // Requeue only when the resource changes.
             Ok(Action::await_change())
@@ -292,6 +304,18 @@ async fn reconcile(instance: Arc<Download>, context: Arc<ContextData>) -> Result
             Ok(Action::await_change())
         }
     }
+}
+
+async fn is_throttled(client: Client, concurrency: usize) -> Result<bool, Error> {
+    if concurrency == 0 {
+        // No limit on concurrency.
+        return Ok(false);
+    }
+    Ok(count_active_queries(client.clone()).await? >= concurrency)
+}
+
+async fn count_active_queries(client: Client) -> Result<usize, Error> {
+    Ok(0)
 }
 
 /// needs_pending returns true if the `Download` resource
@@ -471,11 +495,9 @@ async fn determine_executor_action(
         // Check the status of the Executor.
         match executor.status {
             Some(ref status) => match status.phase {
-                Some(ref phase) => {
-                    if phase == ExecutorPhase::Succeeded.to_str() {
-                        // Increment the number of succeeded Executors.
-                        succeeded += 1;
-                    }
+                Some(phase) => if phase == ExecutorPhase::Succeeded {
+                    // Increment the number of succeeded Executors.
+                    succeeded += 1;
                 }
                 _ => {}
             },
