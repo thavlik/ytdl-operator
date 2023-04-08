@@ -6,7 +6,7 @@ use kube::{
 };
 use s3::{bucket::Bucket, creds::Credentials};
 use tokio::time::Duration;
-use ytdl_types::{Download, DownloadPhase, Executor, ExecutorPhase, ExecutorSpec, S3OutputSpec};
+use ytdl_types::*;
 
 pub mod pod;
 
@@ -37,7 +37,7 @@ pub const INFO_JSONL_KEY: &str = "info.jsonl";
 /// The spec is ultimately resolved into this object.
 pub type Output = (Bucket, String);
 
-/// Creates a child Executor resource for the given Entity.
+/// Creates a child DownloadJob resource for the given Entity.
 pub async fn create_executor(
     client: Client,
     instance: &Download,
@@ -45,7 +45,7 @@ pub async fn create_executor(
     metadata: String,
 ) -> Result<(), Error> {
     let executor = get_entity_executor(instance, id, metadata);
-    let api: Api<Executor> = Api::namespaced(client, instance.namespace().as_ref().unwrap());
+    let api: Api<DownloadJob> = Api::namespaced(client, instance.namespace().as_ref().unwrap());
     api.create(&PostParams::default(), &executor).await?;
     Ok(())
 }
@@ -59,8 +59,8 @@ pub fn get_download_phase(instance: &Download) -> Result<DownloadPhase, Error> {
     Ok(instance.status.as_ref().unwrap().phase.unwrap())
 }
 
-/// Returns the phase of the Executor.
-pub fn get_executor_phase(instance: &Executor) -> Result<ExecutorPhase, Error> {
+/// Returns the phase of the DownloadJob.
+pub fn get_executor_phase(instance: &DownloadJob) -> Result<DownloadJobPhase, Error> {
     Ok(instance.status.as_ref().unwrap().phase.unwrap())
 }
 
@@ -68,7 +68,7 @@ pub fn get_executor_phase(instance: &Executor) -> Result<ExecutorPhase, Error> {
 pub async fn get_video_output(
     client: Client,
     metadata: &serde_json::Value,
-    instance: &Executor,
+    instance: &DownloadJob,
 ) -> Result<Option<Output>, Error> {
     let video = match instance.spec.output.video {
         Some(ref video) => video,
@@ -87,7 +87,7 @@ pub async fn get_video_output(
 pub async fn get_thumbnail_output(
     client: Client,
     metadata: &serde_json::Value,
-    instance: &Executor,
+    instance: &DownloadJob,
 ) -> Result<Option<Output>, Error> {
     let thumbnail = match instance.spec.output.thumbnail {
         Some(ref thumbnail) => thumbnail,
@@ -169,15 +169,17 @@ async fn get_s3_creds(
     match spec.secret {
         Some(ref secret) => {
             let api: Api<Secret> = Api::namespaced(client, namespace);
-            let secret: Secret = api.get(secret).await?;
+            let secret = api.get(secret).await?;
             let access_key_id = get_secret_value(&secret, "access_key_id")?;
             let secret_access_key = get_secret_value(&secret, "secret_access_key")?;
+            let security_token = get_secret_value(&secret, "security_token")?;
+            let session_token = get_secret_value(&secret, "session_token")?;
             Ok(Credentials::new(
                 access_key_id.as_deref(),
                 secret_access_key.as_deref(),
-                None, // security token
-                None, // session token
-                None, // profile
+                security_token.as_deref(),
+                session_token.as_deref(),
+                None, // expiration
             )?)
         }
         None => Ok(Credentials::default()?),
@@ -242,20 +244,20 @@ pub struct Entity {
     pub metadata: String,
 }
 
-/// Returns an Executor owned by the Download resource that
+/// Returns an DownloadJob owned by the Download resource that
 /// is configured for the Entity.
-pub fn get_entity_executor(instance: &Download, id: String, metadata: String) -> Executor {
-    // Make the Download the owner of the Executor.
+pub fn get_entity_executor(instance: &Download, id: String, metadata: String) -> DownloadJob {
+    // Make the Download the owner of the DownloadJob.
     let oref = instance.controller_owner_ref(&()).unwrap();
-    Executor {
+    DownloadJob {
         metadata: ObjectMeta {
             name: Some(format!("{}-{}", instance.name_any(), id)),
             namespace: Some(instance.namespace().unwrap()),
             owner_references: Some(vec![oref]),
             ..Default::default()
         },
-        spec: ExecutorSpec {
-            // The Executor's metadata is the Entity's metadata.
+        spec: DownloadJobSpec {
+            // The DownloadJob's metadata is the Entity's metadata.
             metadata,
             // Inherit the Download's executor image.
             executor: instance.spec.executor.clone(),
@@ -268,25 +270,18 @@ pub fn get_entity_executor(instance: &Download, id: String, metadata: String) ->
     }
 }
 
-/// Returns the Executor owned by the Download resource
-/// that is downloading a video with the given ID.
-pub async fn get_executor(
+/// Returns the [`DownloadJob`] with the given name/namespace.
+pub async fn get_download_job(
     client: Client,
     name: &str,
     namespace: &str,
-) -> Result<Option<Executor>, Error> {
-    let executor_api: Api<Executor> = Api::namespaced(client, namespace);
-    match executor_api.get(&name).await {
-        Ok(executor) => Ok(Some(executor)),
-        Err(e) => match &e {
-            kube::Error::Api(ae) => match ae.code {
-                // If the Executor does not exist, return None.
-                404 => Ok(None),
-                // If we can't access it, return an error.
-                _ => Err(e.into()),
-            },
-            // Unknown, non-kube error.
-            _ => Err(e.into()),
-        },
+) -> Result<Option<DownloadJob>, Error> {
+    match Api::<DownloadJob>::namespaced(client, namespace)
+        .get(&name)
+        .await
+    {
+        Ok(dj) => Ok(Some(dj)),
+        Err(kube::Error::Api(ae)) if ae.code == 404 => Ok(None),
+        Err(e) => Err(e.into()),
     }
 }

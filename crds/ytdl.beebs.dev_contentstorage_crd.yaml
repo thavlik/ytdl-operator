@@ -1,0 +1,436 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: contentstorages.ytdl.beebs.dev
+spec:
+  group: ytdl.beebs.dev
+  names:
+    categories: []
+    kind: ContentStorage
+    plural: contentstorages
+    shortNames: []
+    singular: contentstorage
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: PHASE
+      type: string
+    - jsonPath: .status.lastUpdated
+      name: AGE
+      type: date
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ContentStorageSpec via `CustomResource`
+        properties:
+          spec:
+            description: |-
+              Struct corresponding to the Specification (`spec`) part of the `ContentStorage` resource. The `ContentStorage` custom resource is responsible for configuring the storage of audiovisual content, metadata json, and thumbnail images.
+
+              The same `ContentStorage` resource can be referenced by multiple `Download` resources to unify the storage configuration for multiple downloads. This way, the configuration is all in one place, and updating it is trivial regardless of how many downloads are running.
+
+              Currently, everything is stored in S3-compatible buckets. If you require alternative storage means, please open an issue or consider using [NooBaa](https://www.noobaa.io/) as a proxy between ytdl-operator and your storage backend.
+            properties:
+              metadata:
+                description: Metadata output specification. Configure this field to cache the video info json from `youtube-dl --dump-json` into S3 buckets and/or relational databases. Items in this list may be processed in parallel.
+                items:
+                  description: Configuration for metadata json storage. The metadata json is derived from each line of output yielded by `youtube-dl --dump-json`.
+                  properties:
+                    mongodb:
+                      description: MongoDB-compatible output for the metadata. The executor uses the [`mongodb`](https://crates.io/crates/mongodb) crate to connect to the database.
+                      nullable: true
+                      properties:
+                        secret:
+                          description: 'Name of the Kubernetes [`Secret`](https://kubernetes.io/docs/concepts/configuration/secret/) resource containing the database credentials. The secret must contain the following fields: - `username` - `password` - `host` - `port` - `database` - `sslmode` - `sslcert` (where necessary)'
+                          type: string
+                        verify:
+                          description: Verification settings for the MongoDB database. Default behavior is to verify the credentials once and never again.
+                          nullable: true
+                          properties:
+                            interval:
+                              description: Interval for re-verifying the credentials after they have been verified for the first time. If unset, the credentials will only be verified once.
+                              nullable: true
+                              type: string
+                            skip:
+                              description: If `true`, credentials verification will be bypassed. Default is `false`.
+                              nullable: true
+                              type: boolean
+                          type: object
+                      required:
+                      - secret
+                      type: object
+                    redis:
+                      description: Redis cache configuration for the metadata.
+                      nullable: true
+                      properties:
+                        extraKeys:
+                          description: Extra keys to pass to the script. These are templated in the same way as the `key` field. The first key in this list will be indexed starting at `KEYS[2]` within the script.
+                          items:
+                            type: string
+                          nullable: true
+                          type: array
+                        key:
+                          description: 'Template for the redis key. Refer to the youtube-dl documentation on output templates: <https://github.com/ytdl-org/youtube-dl/blob/master/README.md#output-template> Default is `"%(id)s.%(ext)s"`. You should consider if prefixing your keys with a namespace to prevent collisions with other keys in the database is necessary.'
+                          nullable: true
+                          type: string
+                        script:
+                          description: 'Optional script to run instead of the default `SET` command. The script consumes the following arguments: - `KEYS[1]`: the key to set, created from the above `key` template - `ARGV[1]`: the video file, metadata json, or thumbnail file - `ARGV[2]`: the metadata json (if ARGV[1] is a video or thumbnail, otherwise nil) The default script would thus be: ```lua redis.call("SET", KEYS[1], ARGV[1]) ``` You should use the [built-in Redis `cjson` library](https://redis.io/docs/manual/programmability/lua-api/#cjson-library) to deserialize the metadata json in your scripts (available since Redis 2.6.0). Along with the `extraKeys` field, you are able to arbitrarily manipulate the redis cluster in response to a successful video download.'
+                          nullable: true
+                          type: string
+                        secret:
+                          description: 'Name of the Kubernetes [`Secret`](https://kubernetes.io/docs/concepts/configuration/secret/) resource containing the database credentials. The secret must contain the following fields: - `username` - `password` - `host` - `port` - `database` - `sslmode` - `sslcert` (where necessary)'
+                          type: string
+                        verify:
+                          description: Verification settings for the Redis service. The credentials are verified by dialing the server and executing a ping command. Default behavior is to verify the credentials once and never again.
+                          nullable: true
+                          properties:
+                            interval:
+                              description: Interval for re-verifying the credentials after they have been verified for the first time. If unset, the credentials will only be verified once.
+                              nullable: true
+                              type: string
+                            skip:
+                              description: If `true`, credentials verification will be bypassed. Default is `false`.
+                              nullable: true
+                              type: boolean
+                          type: object
+                      required:
+                      - secret
+                      type: object
+                    s3:
+                      description: Amazon S3-compatible output for metadata `.json` files.
+                      nullable: true
+                      properties:
+                        bucket:
+                          description: S3 bucket name (required).
+                          type: string
+                        endpoint:
+                          description: Alternative S3 endpoint (e.g. `"https://nyc3.digitaloceanspaces.com"`)
+                          nullable: true
+                          type: string
+                        key:
+                          description: 'S3 object key template. Refer to youtube-dl documentation for details on which keys are available: <https://github.com/ytdl-org/youtube-dl#output-template>. The default value is `"%(id)s.%(ext)s"`.'
+                          nullable: true
+                          type: string
+                        region:
+                          description: S3 region. Default is `"us-east-1"`.
+                          nullable: true
+                          type: string
+                        secret:
+                          description: Kubernetes `Secret` resource name containing S3 credentials as the `access_key_id` and `secret_access_key` fields. If no credentials are specified, the default creds are used. This is typical behavior on AWS, but will not be the case for other S3-compatible backends.
+                          nullable: true
+                          type: string
+                        verify:
+                          description: Verification configuration for the S3 service. Default behavior is to verify the credentials once and never again.
+                          nullable: true
+                          properties:
+                            interval:
+                              description: Interval for re-verifying the credentials after they have been verified for the first time. If unset, the credentials will only be verified once.
+                              nullable: true
+                              type: string
+                            skip:
+                              description: If `true`, credentials verification will be bypassed. Default is `false`.
+                              nullable: true
+                              type: boolean
+                          type: object
+                      required:
+                      - bucket
+                      type: object
+                    sql:
+                      description: SQL-compatible output for the metadata. The executor uses the [`sqlx`](https://crates.io/crates/sqlx) crate to connect to the database, which supports a wide variety of SQL-compatible databases.
+                      nullable: true
+                      properties:
+                        secret:
+                          description: 'Name of the Kubernetes [`Secret`](https://kubernetes.io/docs/concepts/configuration/secret/) resource containing the database credentials. The secret must contain the following fields: - `username` - `password` - `host` - `port` - `database` - `sslmode` - `sslcert` (where necessary)'
+                          type: string
+                        verify:
+                          description: Verification settings for the SQL database. Default behavior is to verify the credentials once and never again.
+                          nullable: true
+                          properties:
+                            interval:
+                              description: Interval for re-verifying the credentials after they have been verified for the first time. If unset, the credentials will only be verified once.
+                              nullable: true
+                              type: string
+                            skip:
+                              description: If `true`, credentials verification will be bypassed. Default is `false`.
+                              nullable: true
+                              type: boolean
+                          type: object
+                      required:
+                      - secret
+                      type: object
+                  type: object
+                nullable: true
+                type: array
+              thumbnail:
+                description: Thumbnail output specification. Configure this field to cache the video thumbnails into S3 buckets. Items in this list may be processed in parallel.
+                items:
+                  description: Configuration for thumbnail storage. Resizing and conversion is supported.
+                  properties:
+                    filter:
+                      description: Image filter algorithm to use when resizing. Recommended (and the default) is [`Lanczos3`](ImageFilter::Lanczos3).
+                      enum:
+                      - Nearest
+                      - Triangle
+                      - CatmullRom
+                      - Gaussian
+                      - Lanczos3
+                      nullable: true
+                      type: string
+                    format:
+                      description: Image format (`jpg`, `png`, etc.) The thumbnail will be converted to conform to this format. If unspecified, the image is not converted. See the crate [`image-convert`](https://crates.io/crates/image-convert).
+                      enum:
+                      - Jpeg
+                      - Png
+                      - Webp
+                      - Bmp
+                      - Gif
+                      - Ico
+                      - Pgm
+                      nullable: true
+                      type: string
+                    height:
+                      description: Resize height. If specified, the thumbnail will be resized to this height. If width is also specified, the thumbnail will be resized to fit within the specified dimensions, otherwise the aspect ratio is maintained.
+                      format: uint32
+                      minimum: 0.0
+                      nullable: true
+                      type: integer
+                    redis:
+                      description: Redis cache configuration for thumbnails.
+                      nullable: true
+                      properties:
+                        extraKeys:
+                          description: Extra keys to pass to the script. These are templated in the same way as the `key` field. The first key in this list will be indexed starting at `KEYS[2]` within the script.
+                          items:
+                            type: string
+                          nullable: true
+                          type: array
+                        key:
+                          description: 'Template for the redis key. Refer to the youtube-dl documentation on output templates: <https://github.com/ytdl-org/youtube-dl/blob/master/README.md#output-template> Default is `"%(id)s.%(ext)s"`. You should consider if prefixing your keys with a namespace to prevent collisions with other keys in the database is necessary.'
+                          nullable: true
+                          type: string
+                        script:
+                          description: 'Optional script to run instead of the default `SET` command. The script consumes the following arguments: - `KEYS[1]`: the key to set, created from the above `key` template - `ARGV[1]`: the video file, metadata json, or thumbnail file - `ARGV[2]`: the metadata json (if ARGV[1] is a video or thumbnail, otherwise nil) The default script would thus be: ```lua redis.call("SET", KEYS[1], ARGV[1]) ``` You should use the [built-in Redis `cjson` library](https://redis.io/docs/manual/programmability/lua-api/#cjson-library) to deserialize the metadata json in your scripts (available since Redis 2.6.0). Along with the `extraKeys` field, you are able to arbitrarily manipulate the redis cluster in response to a successful video download.'
+                          nullable: true
+                          type: string
+                        secret:
+                          description: 'Name of the Kubernetes [`Secret`](https://kubernetes.io/docs/concepts/configuration/secret/) resource containing the database credentials. The secret must contain the following fields: - `username` - `password` - `host` - `port` - `database` - `sslmode` - `sslcert` (where necessary)'
+                          type: string
+                        verify:
+                          description: Verification settings for the Redis service. The credentials are verified by dialing the server and executing a ping command. Default behavior is to verify the credentials once and never again.
+                          nullable: true
+                          properties:
+                            interval:
+                              description: Interval for re-verifying the credentials after they have been verified for the first time. If unset, the credentials will only be verified once.
+                              nullable: true
+                              type: string
+                            skip:
+                              description: If `true`, credentials verification will be bypassed. Default is `false`.
+                              nullable: true
+                              type: boolean
+                          type: object
+                      required:
+                      - secret
+                      type: object
+                    s3:
+                      description: Amazon S3-compatible storage configuration for thumbnails.
+                      nullable: true
+                      properties:
+                        bucket:
+                          description: S3 bucket name (required).
+                          type: string
+                        endpoint:
+                          description: Alternative S3 endpoint (e.g. `"https://nyc3.digitaloceanspaces.com"`)
+                          nullable: true
+                          type: string
+                        key:
+                          description: 'S3 object key template. Refer to youtube-dl documentation for details on which keys are available: <https://github.com/ytdl-org/youtube-dl#output-template>. The default value is `"%(id)s.%(ext)s"`.'
+                          nullable: true
+                          type: string
+                        region:
+                          description: S3 region. Default is `"us-east-1"`.
+                          nullable: true
+                          type: string
+                        secret:
+                          description: Kubernetes `Secret` resource name containing S3 credentials as the `access_key_id` and `secret_access_key` fields. If no credentials are specified, the default creds are used. This is typical behavior on AWS, but will not be the case for other S3-compatible backends.
+                          nullable: true
+                          type: string
+                        verify:
+                          description: Verification configuration for the S3 service. Default behavior is to verify the credentials once and never again.
+                          nullable: true
+                          properties:
+                            interval:
+                              description: Interval for re-verifying the credentials after they have been verified for the first time. If unset, the credentials will only be verified once.
+                              nullable: true
+                              type: string
+                            skip:
+                              description: If `true`, credentials verification will be bypassed. Default is `false`.
+                              nullable: true
+                              type: boolean
+                          type: object
+                      required:
+                      - bucket
+                      type: object
+                    width:
+                      description: Resize width. If specified, the thumbnail will be resized to this width. If height is also specified, the thumbnail will be resized to fit within the specified dimensions, otherwise the aspect ratio is maintained.
+                      format: uint32
+                      minimum: 0.0
+                      nullable: true
+                      type: integer
+                  type: object
+                nullable: true
+                type: array
+              video:
+                description: Audiovisual content output specification. Configure this field to download audio, video, or both to S3 buckets. If unset, no audiovisual content will be downloaded. This would be useful if you only want to cache the metadata json and/or thumbnails. If multiple backends are specified here, the video will be downloaded once for each backend. This allows you to download the video in multiple formats. Each item in this list is processed sequentially to avoid rate limiting.
+                items:
+                  description: Configuration for audiovisual content storage. Currently only S3 and Redis are supported. The latter is intended for use with an app that intends to serve recently downloaded content from memory.
+                  properties:
+                    format:
+                      description: |-
+                        Download video format, injected as `youtube-dl`'s `--format` option. Defaults to `"best"`. Refer to the youtube-dl documentation: <https://github.com/ytdl-org/youtube-dl/blob/master/README.md#format-selection>
+
+                        It is highly recommended to specify the format so it will be consistent across all videos, but the ability to download the highest quality video regardless of the format is maintained for niche purposes. If two platforms use different formats for their highest quality videos, you should create two `ContentStorage` resources that each specify the best format for each platform, as opposed to creating a single `ContentStorage` to receive mixed format videos.
+                      nullable: true
+                      type: string
+                    redis:
+                      description: 'Redis-compatible output. Use this if your app is designed to serve recently downloaded content in-memory. It is recommended to use a key eviction policy that will prevent the cluster from running out of memory, as downloading a large number of videos into Redis will quickly consume all memory. See Redis documentation on eviction: <https://redis.io/docs/reference/eviction/>'
+                      nullable: true
+                      properties:
+                        extraKeys:
+                          description: Extra keys to pass to the script. These are templated in the same way as the `key` field. The first key in this list will be indexed starting at `KEYS[2]` within the script.
+                          items:
+                            type: string
+                          nullable: true
+                          type: array
+                        key:
+                          description: 'Template for the redis key. Refer to the youtube-dl documentation on output templates: <https://github.com/ytdl-org/youtube-dl/blob/master/README.md#output-template> Default is `"%(id)s.%(ext)s"`. You should consider if prefixing your keys with a namespace to prevent collisions with other keys in the database is necessary.'
+                          nullable: true
+                          type: string
+                        script:
+                          description: 'Optional script to run instead of the default `SET` command. The script consumes the following arguments: - `KEYS[1]`: the key to set, created from the above `key` template - `ARGV[1]`: the video file, metadata json, or thumbnail file - `ARGV[2]`: the metadata json (if ARGV[1] is a video or thumbnail, otherwise nil) The default script would thus be: ```lua redis.call("SET", KEYS[1], ARGV[1]) ``` You should use the [built-in Redis `cjson` library](https://redis.io/docs/manual/programmability/lua-api/#cjson-library) to deserialize the metadata json in your scripts (available since Redis 2.6.0). Along with the `extraKeys` field, you are able to arbitrarily manipulate the redis cluster in response to a successful video download.'
+                          nullable: true
+                          type: string
+                        secret:
+                          description: 'Name of the Kubernetes [`Secret`](https://kubernetes.io/docs/concepts/configuration/secret/) resource containing the database credentials. The secret must contain the following fields: - `username` - `password` - `host` - `port` - `database` - `sslmode` - `sslcert` (where necessary)'
+                          type: string
+                        verify:
+                          description: Verification settings for the Redis service. The credentials are verified by dialing the server and executing a ping command. Default behavior is to verify the credentials once and never again.
+                          nullable: true
+                          properties:
+                            interval:
+                              description: Interval for re-verifying the credentials after they have been verified for the first time. If unset, the credentials will only be verified once.
+                              nullable: true
+                              type: string
+                            skip:
+                              description: If `true`, credentials verification will be bypassed. Default is `false`.
+                              nullable: true
+                              type: boolean
+                          type: object
+                      required:
+                      - secret
+                      type: object
+                    s3:
+                      description: Amazon S3-compatible output.
+                      nullable: true
+                      properties:
+                        bucket:
+                          description: S3 bucket name (required).
+                          type: string
+                        endpoint:
+                          description: Alternative S3 endpoint (e.g. `"https://nyc3.digitaloceanspaces.com"`)
+                          nullable: true
+                          type: string
+                        key:
+                          description: 'S3 object key template. Refer to youtube-dl documentation for details on which keys are available: <https://github.com/ytdl-org/youtube-dl#output-template>. The default value is `"%(id)s.%(ext)s"`.'
+                          nullable: true
+                          type: string
+                        region:
+                          description: S3 region. Default is `"us-east-1"`.
+                          nullable: true
+                          type: string
+                        secret:
+                          description: Kubernetes `Secret` resource name containing S3 credentials as the `access_key_id` and `secret_access_key` fields. If no credentials are specified, the default creds are used. This is typical behavior on AWS, but will not be the case for other S3-compatible backends.
+                          nullable: true
+                          type: string
+                        verify:
+                          description: Verification configuration for the S3 service. Default behavior is to verify the credentials once and never again.
+                          nullable: true
+                          properties:
+                            interval:
+                              description: Interval for re-verifying the credentials after they have been verified for the first time. If unset, the credentials will only be verified once.
+                              nullable: true
+                              type: string
+                            skip:
+                              description: If `true`, credentials verification will be bypassed. Default is `false`.
+                              nullable: true
+                              type: boolean
+                          type: object
+                      required:
+                      - bucket
+                      type: object
+                  type: object
+                nullable: true
+                type: array
+              webhook:
+                description: Optional webhook(s) to call whenever a video is successfully added to all of the configured storage backends. You can use this feature to automate processing of the video, such as transcoding, uploading to a CDN, indexing in a search engine, etc. The request will use the `POST` method and the body is the metadata json for the video in question.
+                items:
+                  description: Configuration for the [`ContentStorage`] webhook. The webhook will be triggered after each video is downloaded by POSTing the video metadata json to the specified URL. You can use this feature to automate processing of the video, such as transcoding, uploading to a CDN, indexing in a search engine, etc.
+                  properties:
+                    basicAuth:
+                      description: Optional HTTP basic auth configuration.
+                      nullable: true
+                      properties:
+                        secret:
+                          description: Name of the Kubernetes [`Secret`](https://kubernetes.io/docs/concepts/configuration/secret/) resource containing the HTTP basic auth credentials. The secret must contain the fields `username` and `password`.
+                          type: string
+                      required:
+                      - secret
+                      type: object
+                    timeout:
+                      description: Request timeout duration string. Default is `"10s"`.
+                      nullable: true
+                      type: string
+                    url:
+                      description: URL of the webhook. The video metadata json will be POSTed to this URL.
+                      type: string
+                  required:
+                  - url
+                  type: object
+                nullable: true
+                type: array
+            type: object
+          status:
+            description: Status object for the [`ContentStorage`] resource.
+            nullable: true
+            properties:
+              lastUpdated:
+                description: Timestamp of when the [`ContentStorageStatus`] object was last updated.
+                nullable: true
+                type: string
+              lastVerified:
+                description: 'Timestamp of when all of the service credentials were last verified. TODO: keep track of when each individual service was last verified'
+                nullable: true
+                type: string
+              message:
+                description: A human-readable message indicating details about why the [`ContentStorage`] is in this phase.
+                nullable: true
+                type: string
+              phase:
+                description: A short description of the [`ContentStorage`] resource's current state.
+                enum:
+                - Pending
+                - Verifying
+                - Verified
+                - Ready
+                - ErrVerifyFailed
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: ContentStorage
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -1,0 +1,77 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: downloadchildprocesses.ytdl.beebs.dev
+spec:
+  group: ytdl.beebs.dev
+  names:
+    categories: []
+    kind: DownloadChildProcess
+    plural: downloadchildprocesses
+    shortNames:
+    - dcp
+    - dlcp
+    singular: downloadchildprocess
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: PHASE
+      type: string
+    - jsonPath: .status.lastUpdated
+      name: AGE
+      type: date
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for DownloadChildProcessSpec via `CustomResource`
+        properties:
+          spec:
+            description: Specification for the [`DownloadChildProcess`] custom resource, which are created by the [`Download`] controller for each line in the query's metadata jsonl. This way individual videos are downloaded using different IP addresses and overall download speed can scale horizontally with the Kubernetes cluster.
+            properties:
+              metadata:
+                description: Metadata json from `youtube-dl -j`. Populated by the parent [`Download`] resource upon creation. youtube-dl accepts a `--load-info-json` argument to load metadata from a file, so this field is ultimately used to avoid re-querying when the metadata was already queried by the parent [`Download`].
+                type: string
+              output:
+                description: Name reference to a `ContentStorage` resource. Inherited from the parent [`DownloadSpec::output`].
+                type: string
+            required:
+            - metadata
+            - output
+            type: object
+          status:
+            description: Status object for the [`DownloadChildProcess`] resource.
+            nullable: true
+            properties:
+              lastUpdated:
+                description: Timestamp of when the [`DownloadChildProcessStatus`] object was last updated.
+                nullable: true
+                type: string
+              message:
+                description: A human-readable message indicating details about why the [`DownloadChildProcess`] is in this phase.
+                nullable: true
+                type: string
+              phase:
+                description: A short description of the [`DownloadChildProcess`] resource's current state.
+                enum:
+                - Pending
+                - Waiting
+                - Starting
+                - Running
+                - Succeeded
+                - Failed
+                nullable: true
+                type: string
+              startTime:
+                description: Timestamp of when the download pod was started. Because a [`DownloadChildProcess`] may be delayed waiting for a VPN slot, this timestamp may be later than the [`creationTimestamp`](DownloadChildProcess::metadata.creationTimestamp).
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: DownloadChildProcess
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -1,7 +1,10 @@
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use std::{fmt, str::FromStr};
 
 /// Enumeration of supported image file types for thumbnail conversion.
 /// Roughly corresponds with the [`image::ImageFormat`] enum.
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash, JsonSchema)]
 pub enum ImageFormat {
     Jpeg,
     Png,
@@ -16,7 +19,7 @@ impl FromStr for ImageFormat {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
+        match s.to_lowercase().as_str() {
             "jpg" => Ok(ImageFormat::Jpeg),
             "png" => Ok(ImageFormat::Png),
             "webp" => Ok(ImageFormat::Webp),

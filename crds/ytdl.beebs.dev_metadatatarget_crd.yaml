@@ -1,0 +1,199 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: metadatatargets.ytdl.beebs.dev
+spec:
+  group: ytdl.beebs.dev
+  names:
+    categories: []
+    kind: MetadataTarget
+    plural: metadatatargets
+    shortNames: []
+    singular: metadatatarget
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: PHASE
+      type: string
+    - jsonPath: .status.lastUpdated
+      name: AGE
+      type: date
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for MetadataTargetSpec via `CustomResource`
+        properties:
+          spec:
+            description: Struct corresponding to the Specification (`spec`) part of the `MetadataTarget` resource. The `MetadataTarget` custom resource is responsible for configuring the storage of metadata.
+            oneOf:
+            - required:
+              - s3
+            - required:
+              - sql
+            - required:
+              - mongodb
+            - required:
+              - redis
+            properties:
+              mongodb:
+                description: MongoDB-compatible output for the metadata. The executor uses the [`mongodb`](https://crates.io/crates/mongodb) crate to connect to the database/cluster.
+                properties:
+                  collection:
+                    description: Collection name override. Default is `"metadata"`.
+                    nullable: true
+                    type: string
+                  id:
+                    description: 'Override template for documents'' `_id` field. Refer to the youtube-dl documentation on output templates: <https://github.com/ytdl-org/youtube-dl/blob/master/README.md#output-template> Default value is `"%(id)s"`, which will use the video ID as the document ID. The rest of the document is the metadata json itself (i.e. the output of `youtube-dl --dump-json`).'
+                    nullable: true
+                    type: string
+                  secret:
+                    description: 'Name of the Kubernetes [`Secret`](https://kubernetes.io/docs/concepts/configuration/secret/) resource containing the database credentials. The secret must contain the following fields: - `username` - `password` - `host` - `port` - `database` - `sslmode` - `sslcert` (where necessary)'
+                    type: string
+                  verify:
+                    description: Verification settings for the MongoDB database. Default behavior is to verify the credentials once and never again.
+                    nullable: true
+                    properties:
+                      interval:
+                        description: Interval for re-verifying the credentials after they have been verified for the first time. If unset, the credentials will only be verified once.
+                        nullable: true
+                        type: string
+                      skip:
+                        description: If `true`, credentials verification will be bypassed. Default is `false`.
+                        nullable: true
+                        type: boolean
+                    type: object
+                required:
+                - secret
+                type: object
+              redis:
+                description: Redis cache configuration for the metadata.
+                properties:
+                  extraKeys:
+                    description: Extra keys to pass to the script. These are templated in the same way as the `key` field. The first key in this list will be indexed starting at `KEYS[2]` within the script.
+                    items:
+                      type: string
+                    nullable: true
+                    type: array
+                  key:
+                    description: 'Template for the redis key. Refer to the youtube-dl documentation on output templates: <https://github.com/ytdl-org/youtube-dl/blob/master/README.md#output-template> Default is `"%(id)s.%(ext)s"`. You should consider if prefixing your keys with a namespace to prevent collisions with other keys in the database is necessary.'
+                    nullable: true
+                    type: string
+                  script:
+                    description: 'Optional script to run instead of the default `SET` command. The script consumes the following arguments: - `KEYS[1]`: the key to set, created from the above `key` template - `ARGV[1]`: the video file, metadata json, or thumbnail file - `ARGV[2]`: the metadata json (if ARGV[1] is a video or thumbnail, otherwise nil) The default script would thus be: ```lua redis.call("SET", KEYS[1], ARGV[1]) ``` You should use the [built-in Redis `cjson` library](https://redis.io/docs/manual/programmability/lua-api/#cjson-library) to deserialize the metadata json in your scripts (available since Redis 2.6.0). Along with the `extraKeys` field, you are able to arbitrarily manipulate the redis cluster in response to a successful video download.'
+                    nullable: true
+                    type: string
+                  secret:
+                    description: 'Name of the Kubernetes [`Secret`](https://kubernetes.io/docs/concepts/configuration/secret/) resource containing the database credentials. The secret must contain the following fields: - `username` - `password` - `host` - `port` - `database` - `sslmode` - `sslcert` (where necessary)'
+                    type: string
+                  verify:
+                    description: Verification settings for the Redis service. The credentials are verified by dialing the server and executing a ping command. Default behavior is to verify the credentials once and never again.
+                    nullable: true
+                    properties:
+                      interval:
+                        description: Interval for re-verifying the credentials after they have been verified for the first time. If unset, the credentials will only be verified once.
+                        nullable: true
+                        type: string
+                      skip:
+                        description: If `true`, credentials verification will be bypassed. Default is `false`.
+                        nullable: true
+                        type: boolean
+                    type: object
+                required:
+                - secret
+                type: object
+              s3:
+                description: Amazon S3-compatible output for metadata `.json` files.
+                properties:
+                  bucket:
+                    description: S3 bucket name (required).
+                    type: string
+                  endpoint:
+                    description: Alternative S3 endpoint (e.g. `"https://nyc3.digitaloceanspaces.com"`)
+                    nullable: true
+                    type: string
+                  key:
+                    description: 'S3 object key template. Refer to youtube-dl documentation for details on which keys are available: <https://github.com/ytdl-org/youtube-dl#output-template>. The default value is `"%(id)s.%(ext)s"`.'
+                    nullable: true
+                    type: string
+                  region:
+                    description: S3 region. Default is `"us-east-1"`.
+                    nullable: true
+                    type: string
+                  secret:
+                    description: Kubernetes `Secret` resource name containing S3 credentials as the `access_key_id` and `secret_access_key` fields. If no credentials are specified, the default creds are used. This is typical behavior on AWS, but will not be the case for other S3-compatible backends.
+                    nullable: true
+                    type: string
+                  verify:
+                    description: Verification configuration for the S3 service. Default behavior is to verify the credentials once and never again.
+                    nullable: true
+                    properties:
+                      interval:
+                        description: Interval for re-verifying the credentials after they have been verified for the first time. If unset, the credentials will only be verified once.
+                        nullable: true
+                        type: string
+                      skip:
+                        description: If `true`, credentials verification will be bypassed. Default is `false`.
+                        nullable: true
+                        type: boolean
+                    type: object
+                required:
+                - bucket
+                type: object
+              sql:
+                description: 'SQL-compatible output for the metadata. The executor uses the [`sqlx`](https://crates.io/crates/sqlx) crate to connect to the database, which supports a wide variety of SQL-compatible databases. TODO: the schema is currently pending implementation.'
+                properties:
+                  secret:
+                    description: 'Name of the Kubernetes [`Secret`](https://kubernetes.io/docs/concepts/configuration/secret/) resource containing the database credentials. The secret must contain the following fields: - `username` - `password` - `host` - `port` - `database` - `sslmode` - `sslcert` (where necessary)'
+                    type: string
+                  verify:
+                    description: Verification settings for the SQL database. Default behavior is to verify the credentials once and never again.
+                    nullable: true
+                    properties:
+                      interval:
+                        description: Interval for re-verifying the credentials after they have been verified for the first time. If unset, the credentials will only be verified once.
+                        nullable: true
+                        type: string
+                      skip:
+                        description: If `true`, credentials verification will be bypassed. Default is `false`.
+                        nullable: true
+                        type: boolean
+                    type: object
+                required:
+                - secret
+                type: object
+            type: object
+          status:
+            description: Status object for the [`MetadataTarget`] resource.
+            nullable: true
+            properties:
+              lastUpdated:
+                description: Timestamp of when the [`MetadataTargetStatus`] object was last updated.
+                nullable: true
+                type: string
+              lastVerified:
+                description: Timestamp of when verification last succeeded.
+                nullable: true
+                type: string
+              message:
+                description: A human-readable message indicating details about why the [`MetadataTarget`] is in this phase.
+                nullable: true
+                type: string
+              phase:
+                description: A short description of the [`MetadataTarget`] resource's current state.
+                enum:
+                - Pending
+                - Verifying
+                - Ready
+                - ErrVerifyFailed
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: MetadataTarget
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
